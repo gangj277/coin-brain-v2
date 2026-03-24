@@ -223,4 +223,3 @@ ${summaries}`;
   });
 }
 
-export type { NarratedSignal };

@@ -16,11 +16,11 @@ export type { PositionChange, TrackerStats, TrackerConfig } from "./types";
 
 const TIER_RANK: Record<TraderTier, number> = { S: 5, A: 4, B: 3, C: 2, D: 1 };
 
-// Use globalThis to share singleton across instrumentation.ts and API routes
-const GLOBAL_KEY = "__positionTracker__" as const;
+// Use globalThis to share singleton across API routes
+const GLOBAL_KEY = "__positionTracker__";
 declare global {
   // eslint-disable-next-line no-var
-  var [GLOBAL_KEY]: PositionTracker | undefined;
+  var __positionTracker__: PositionTracker | undefined;
 }
 
 export class PositionTracker {
@@ -52,10 +52,10 @@ export class PositionTracker {
   }
 
   static getInstance(config?: Partial<TrackerConfig>): PositionTracker {
-    if (!globalThis[GLOBAL_KEY]) {
-      globalThis[GLOBAL_KEY] = new PositionTracker(config);
+    if (!globalThis.__positionTracker__) {
+      globalThis.__positionTracker__ = new PositionTracker(config);
     }
-    return globalThis[GLOBAL_KEY];
+    return globalThis.__positionTracker__;
   }
 
   isInitialized(): boolean {
