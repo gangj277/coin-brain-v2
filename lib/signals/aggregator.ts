@@ -7,6 +7,12 @@
 
 import type { PositionStore } from "../hyperliquid/tracker/store";
 import type { TraderTier } from "../hyperliquid/tracker/types";
+import { getPositionTimingKey } from "../hyperliquid/timing/state";
+import type {
+  PositionTimingConfidence,
+  PositionTimingRecord,
+  PositionTimingSource,
+} from "../hyperliquid/timing/types";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -26,6 +32,12 @@ export interface TraderPosition {
   unrealizedPnl: number;
   returnOnEquity: number;
   marginUsed: number;
+  openedAt: number | null;
+  lastAddedAt: number | null;
+  observedAt: number | null;
+  timingSource: PositionTimingSource;
+  timingConfidence: PositionTimingConfidence;
+  preexisting: boolean;
 }
 
 export interface Signal {
@@ -59,7 +71,10 @@ const TIER_WEIGHT: Record<TraderTier, number> = {
   S: 5, A: 3, B: 1.5, C: 1, D: 0.5,
 };
 
-export function aggregateSignals(store: PositionStore): Signal[] {
+export function aggregateSignals(
+  store: PositionStore,
+  timingRecords: Record<string, PositionTimingRecord> = {}
+): Signal[] {
   const allPositions = store.getAllPositions();
 
   // Group by coin
@@ -68,6 +83,8 @@ export function aggregateSignals(store: PositionStore): Signal[] {
   for (const trader of allPositions) {
     for (const pos of trader.positions) {
       if (!coinGroups.has(pos.coin)) coinGroups.set(pos.coin, []);
+      const timing =
+        timingRecords[getPositionTimingKey(trader.address, pos.coin)];
       coinGroups.get(pos.coin)!.push({
         address: trader.address,
         tier: trader.tier,
@@ -81,6 +98,12 @@ export function aggregateSignals(store: PositionStore): Signal[] {
         unrealizedPnl: pos.unrealizedPnl,
         returnOnEquity: pos.returnOnEquity,
         marginUsed: pos.marginUsed,
+        openedAt: timing?.openedAt ?? null,
+        lastAddedAt: timing?.lastAddedAt ?? null,
+        observedAt: timing?.observedAt ?? null,
+        timingSource: timing?.timingSource ?? "bootstrap",
+        timingConfidence: timing?.timingConfidence ?? "low",
+        preexisting: timing?.preexisting ?? true,
       });
     }
   }
@@ -214,13 +237,20 @@ export function aggregateSignals(store: PositionStore): Signal[] {
     });
   }
 
-  // Sort: strength first, then conviction, then value
+  // Sort: strength first, then composite score (conviction × scale weight)
+  // This prevents low-cap coins from ranking above major coins just because of high conviction
   signals.sort((a, b) => {
     const strengthOrder = { strong: 3, moderate: 2, weak: 1 };
     const sDiff = strengthOrder[b.strength] - strengthOrder[a.strength];
     if (sDiff !== 0) return sDiff;
-    const cDiff = b.conviction - a.conviction;
-    if (cDiff !== 0) return cDiff;
+
+    // Composite: conviction (0-100) + scale bonus (0-30)
+    // $10M+ → +30, $1M+ → +20, $100k+ → +10, else → 0
+    const scaleBonus = (v: number) => v >= 10_000_000 ? 30 : v >= 1_000_000 ? 20 : v >= 100_000 ? 10 : 0;
+    const scoreA = a.conviction + scaleBonus(a.totalValueUsd);
+    const scoreB = b.conviction + scaleBonus(b.totalValueUsd);
+    if (scoreB !== scoreA) return scoreB - scoreA;
+
     return b.totalValueUsd - a.totalValueUsd;
   });
 

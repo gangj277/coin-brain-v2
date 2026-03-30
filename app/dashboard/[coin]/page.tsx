@@ -3,6 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState, useCallback, use } from "react";
 import dynamic from "next/dynamic";
+import { formatPositionTiming } from "@/lib/hyperliquid/timing/presentation";
+import { traderName } from "@/lib/trader-name";
+import type {
+  PositionTimingConfidence,
+  PositionTimingSource,
+} from "@/lib/hyperliquid/timing/types";
 
 const CoinChart = dynamic(() => import("@/app/components/coin-chart"), { ssr: false });
 
@@ -12,6 +18,8 @@ interface TraderPosition {
   address: string; tier: string; side: "LONG" | "SHORT"; size: number; sizeUsd: number;
   leverage: number; leverageType: string; entryPx: number; liquidationPx: number | null;
   unrealizedPnl: number; returnOnEquity: number; marginUsed: number;
+  openedAt: number | null; lastAddedAt: number | null; observedAt: number | null;
+  timingSource: PositionTimingSource; timingConfidence: PositionTimingConfidence; preexisting: boolean;
 }
 interface SignalAnalysis {
   marketContext: string; positionAnalysis: string; riskAssessment: string; conclusion: string;
@@ -230,6 +238,10 @@ export default function CoinDetail({ params }: { params: Promise<{ coin: string 
               sizeUsd: p.sizeUsd,
               leverage: p.leverage,
               unrealizedPnl: p.unrealizedPnl,
+              returnOnEquity: p.returnOnEquity,
+              liquidationPx: p.liquidationPx,
+              openedAt: p.openedAt,
+              timingConfidence: p.timingConfidence,
             }))}
             markPx={m?.markPx}
           />
@@ -253,13 +265,20 @@ export default function CoinDetail({ params }: { params: Promise<{ coin: string 
             const tierBadge = p.tier === "S" ? "text-amber border-amber/20 bg-amber-dim"
               : p.tier === "A" ? "text-blue border-blue/20 bg-blue-dim"
               : "text-fg3 border-fg3/10 bg-surface";
+            const timing = formatPositionTiming({
+              openedAt: p.openedAt,
+              lastAddedAt: p.lastAddedAt,
+              observedAt: p.observedAt,
+              timingConfidence: p.timingConfidence,
+              preexisting: p.preexisting,
+            });
 
             return (
               <div key={`${p.address}-${i}`} className="px-5 py-4 border-b border-border-subtle/50 hover:bg-surface/30 transition-colors">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded border ${tierBadge} font-medium`}>{p.tier}</span>
-                    <span className={`text-xs ${MN} text-fg3`}>{p.address.slice(0, 6)}…{p.address.slice(-4)}</span>
+                    <Link href={`/dashboard/trader/${p.address}`} className={`text-xs ${MN} text-fg3 hover:text-green transition-colors`}>{traderName(p.address)}</Link>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`text-[10px] ${MN} px-2 py-0.5 rounded-full ${p.side === "LONG" ? "bg-green/10 text-green" : "bg-red/10 text-red"} font-semibold`}>
@@ -297,6 +316,11 @@ export default function CoinDetail({ params }: { params: Promise<{ coin: string 
                       </span>
                     </>
                   )}
+                </div>
+
+                <div className={`mt-2 flex items-center gap-3 text-[11px] ${MN} text-fg3`}>
+                  <span>{timing.primary}</span>
+                  {timing.secondary && <span className="text-fg3/70">{timing.secondary}</span>}
                 </div>
               </div>
             );

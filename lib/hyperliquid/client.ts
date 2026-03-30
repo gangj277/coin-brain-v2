@@ -81,14 +81,22 @@ export async function getFrontendOpenOrders(
 
 // ─── Trade History ───────────────────────────────────────
 
-export async function getUserFills(user: string): Promise<Fill[]> {
-  return postInfo<Fill[]>({ type: "userFills", user });
+export async function getUserFills(
+  user: string,
+  options?: { aggregateByTime?: boolean }
+): Promise<Fill[]> {
+  return postInfo<Fill[]>({
+    type: "userFills",
+    user,
+    ...(options?.aggregateByTime ? { aggregateByTime: true } : {}),
+  });
 }
 
 export async function getUserFillsByTime(
   user: string,
   startTime: number,
-  endTime?: number
+  endTime?: number,
+  options?: { aggregateByTime?: boolean }
 ): Promise<Fill[]> {
   const body: Record<string, unknown> = {
     type: "userFillsByTime",
@@ -96,6 +104,7 @@ export async function getUserFillsByTime(
     startTime,
   };
   if (endTime) body.endTime = endTime;
+  if (options?.aggregateByTime) body.aggregateByTime = true;
   return postInfo<Fill[]>(body);
 }
 

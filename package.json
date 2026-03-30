@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npx --yes tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.37.0",
