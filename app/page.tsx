@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
-import { IllustOnchain, IllustFunnel, IllustAI, IllustPnlChart, IllustConsensus, IllustDivergence, IllustEmerging, IllustPipeline, IllustTrust, IllustDashboard, IllustIndicator, IllustAutoTrade, IllustDataGrid } from "./components/illustrations";
+import { IllustOnchain, IllustFunnel, IllustAI, IllustPnlChart, IllustConsensus, IllustDivergence, IllustEmerging, IllustPipeline, IllustTrust, IllustDashboard, IllustIndicator, IllustAutoTrade, IllustDataGrid, IllustPrediction, IllustPredictionSmall } from "./components/illustrations";
 
 const M = "font-[family-name:var(--font-geist-mono)]";
 
@@ -482,23 +482,72 @@ function HowItWorks() {
   );
 }
 
+// ─── Prediction Market Showcase ─────────────────────────
+
+function PredictionShowcase() {
+  const stats = [
+    { value: "87%", label: "승률", sub: "10 시드 검증" },
+    { value: "12,160", label: "검증 트레이드", sub: "90일 OOS" },
+    { value: "+$6.89", label: "EV/트레이드", sub: "$10 스테이크 기준" },
+    { value: "2.0%", label: "최대 드로다운", sub: "전 시드 기준" },
+  ];
+  return (
+    <section className="py-28 border-t border-white/[0.04] relative overflow-hidden">
+      <div className="absolute top-1/2 right-0 w-[400px] h-[400px] -translate-y-1/2 translate-x-1/2 rounded-full" style={{ background: "radial-gradient(circle, rgba(96,165,250,0.04), transparent 70%)" }} />
+      <div className="max-w-5xl mx-auto px-6 relative z-10">
+        <div className="grid grid-cols-[1fr_auto] gap-16 items-center">
+          <div>
+            <div className="flex items-center gap-3 mb-6">
+              <div className={`text-xs ${M} text-blue uppercase tracking-widest`}>Prediction Market</div>
+              <span className={`text-[10px] ${M} px-2.5 py-1 rounded-full bg-blue/10 text-blue border border-blue/20`}>PAPER TRADING</span>
+            </div>
+            <h2 className="text-3xl font-bold tracking-tight text-fg mb-8">크립토 방향성을 <span className="text-blue">예측</span>합니다</h2>
+            <div className="space-y-5 text-base text-fg2 leading-relaxed">
+              <p>Polymarket에서 5분마다 생성되는 크립토 Up/Down 마켓.<br />
+                <span className="text-fg font-medium">BTC/ETH 단기 가격 방향을 실증 데이터 기반으로 예측합니다.</span></p>
+              <p>15분 내 <span className={`${M} text-blue`}>0.15%</span> 이상 움직임이 발생하면, 그 방향이 <span className="text-blue font-medium">79-87% 확률</span>로 유지됩니다.<br />
+                90일간 Binance 실데이터 <span className={`${M} text-fg3`}>5,400+</span> 관측에서 검증된 사실입니다.</p>
+              <p className="text-fg3">Coin Brain이 트레이더 행동 패턴에서 엣지를 찾듯,<br />
+                Prediction Market은 <span className="text-fg2">가격 모멘텀 패턴</span>에서 엣지를 찾습니다.</p>
+            </div>
+            {/* Validated stats */}
+            <div className="grid grid-cols-4 gap-6 mt-10 pt-8 border-t border-white/[0.04]">
+              {stats.map(s => (
+                <div key={s.label}>
+                  <div className={`text-2xl font-bold ${M} text-blue tracking-tight`}>{s.value}</div>
+                  <div className="text-sm text-fg2 mt-1">{s.label}</div>
+                  <div className={`text-[11px] ${M} text-fg3 mt-0.5`}>{s.sub}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="shrink-0">
+            <IllustPrediction />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Roadmap ─────────────────────────────────────────────
 
 function Roadmap() {
   const phases = [
     { phase: "NOW", badge: "LIVE", bc: "bg-green text-[#050508]", border: "border-green/30", glow: "shadow-[inset_0_0_30px_rgba(52,211,153,0.04)]", icon: <IllustDashboard />, title: "스마트머니 분석 대시보드", desc: "실시간 포지션 추적과 AI 분석 리포트", features: ["실시간 포지션 트래킹", "Conviction 기반 시그널 클러스터링", "AI 구조화 분석 리포트", "펀딩레이트·OI·거래량 교차 분석"] },
     { phase: "NEXT", badge: "COMING SOON", bc: "bg-cyan/10 text-cyan border border-cyan/20", border: "border-cyan/20", glow: "", icon: <IllustIndicator />, title: "트레이딩 보조 지표", desc: "실전 매매에 활용 가능한 인디케이터", features: ["스마트머니 유입/유출 인디케이터", "Conviction 기반 매수/매도 시그널", "S-tier 포지션 변화 알림", "멀티 타임프레임 컨센서스"] },
+    { phase: "NEXT", badge: "PAPER TRADING", bc: "bg-blue/10 text-blue border border-blue/20", border: "border-blue/20", glow: "shadow-[inset_0_0_30px_rgba(96,165,250,0.04)]", icon: <IllustPredictionSmall />, title: "예측 마켓 자동매매", desc: "크립토 단기 방향성을 87% 정확도로 예측", features: ["BTC/ETH 5분 방향 예측 (87% WR)", "실증 캘리브레이션 기반 확률 모델", "Kelly Criterion 포지션 사이징", "15포인트 리스크 게이트"] },
     { phase: "FUTURE", badge: "PLANNED", bc: "bg-white/5 text-fg3 border border-white/[0.06]", border: "border-white/[0.06]", glow: "", icon: <IllustAutoTrade />, title: "스마트머니 기반 자동매매", desc: "검증된 트레이더를 자동으로 팔로우", features: ["S-tier 트레이더 자동 팔로우", "리스크 관리 자동화", "멀티 트레이더 포트폴리오 복제", "백테스팅 기반 전략 검증"] },
   ];
   return (
     <section className="py-28 border-t border-white/[0.04] relative overflow-hidden">
       <div className="max-w-5xl mx-auto px-6 relative z-10">
         <div className={`text-xs ${M} text-fg3 uppercase tracking-widest mb-4`}>Product Roadmap</div>
-        <h2 className="text-4xl font-bold tracking-tight text-fg mb-4">분석에서 <span className="text-cyan">실전 매매</span>까지</h2>
-        <p className="text-fg2 text-lg mb-16 max-w-2xl">동일한 온체인 인프라 위에 보조 지표와 자동매매 시스템을 구축합니다.</p>
-        <div className="grid grid-cols-3 gap-6">
-          {phases.map(p => (
-            <div key={p.phase} className={`rounded-xl border ${p.border} bg-raised p-7 ${p.glow}`}>
+        <h2 className="text-4xl font-bold tracking-tight text-fg mb-4">분석에서 <span className="text-cyan">예측</span>, 그리고 <span className="text-green">실전 매매</span>까지</h2>
+        <p className="text-fg2 text-lg mb-16 max-w-2xl">동일한 데이터 인프라 위에 예측 시장, 보조 지표, 자동매매 시스템을 구축합니다.</p>
+        <div className="grid grid-cols-2 gap-6">
+          {phases.map((p, idx) => (
+            <div key={idx} className={`rounded-xl border ${p.border} bg-raised p-7 ${p.glow}`}>
               <div className="flex items-center justify-between mb-5">
                 {p.icon}
                 <span className={`text-[10px] ${M} px-2.5 py-1 rounded-full ${p.bc}`}>{p.badge}</span>
@@ -761,6 +810,7 @@ export default function LandingPage() {
       <SignalCatalog />
       {loaded && signals.length > 0 && <><ConsensusMap signals={signals} /><LivePreview signals={signals} /></>}
       <HowItWorks />
+      <PredictionShowcase />
       <Roadmap />
       <WhyFree />
       <TrustNumbers signals={signals} stats={stats} />

@@ -5,11 +5,22 @@ import { useEffect, useState, useCallback, use } from "react";
 
 const MN = "font-[family-name:var(--font-geist-mono)]";
 function fmt(n: number) { if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`; if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(0)}k`; return `$${n.toFixed(0)}`; }
+function timeAgo(dateStr: string) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}분 전`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "어제";
+  if (days < 7) return `${days}일 전`;
+  return dateStr;
+}
 
 interface YouTuberPosition {
   coin: string; side: "롱" | "숏" | "중립";
   targetPrice?: number; stopLoss?: number; comment: string;
-  sourceUrl: string; updatedAt: string;
+  sourceUrl: string; sourceTitle?: string; updatedAt: string;
 }
 interface YouTuber {
   id: string; name: string; channelUrl: string; profileImage: string;
@@ -145,7 +156,7 @@ export default function YouTuberDetail({ params }: { params: Promise<{ id: strin
                         pos.side === "롱" ? "bg-green/10 text-green" : pos.side === "숏" ? "bg-red/10 text-red" : "bg-surface text-fg3"
                       }`}>{pos.side}</span>
                     </div>
-                    <span className={`text-[10px] ${MN} text-fg3`}>{pos.updatedAt}</span>
+                    <span className={`text-[10px] ${MN} text-fg3`}>{timeAgo(pos.updatedAt)}</span>
                   </div>
 
                   {/* Target + Stop with visual range */}
@@ -200,7 +211,7 @@ export default function YouTuberDetail({ params }: { params: Promise<{ id: strin
                   <div className="px-5 pb-4">
                     <a href={pos.sourceUrl} target="_blank" rel="noopener noreferrer"
                       className={`inline-flex items-center gap-1.5 text-[11px] ${MN} text-fg3 hover:text-fg transition-colors`}>
-                      <span>소스 영상</span>
+                      <span>{pos.sourceTitle || "소스 영상"}</span>
                       <span>→</span>
                     </a>
                   </div>

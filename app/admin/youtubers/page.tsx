@@ -11,6 +11,7 @@ interface YouTuberPosition {
   stopLoss?: number;
   comment: string;
   sourceUrl: string;
+  sourceTitle?: string;
   updatedAt: string;
 }
 
@@ -97,23 +98,41 @@ export default function AdminYoutubers() {
     });
   }
 
-  // Save editing youtuber
-  function saveEditing() {
+  // Save to Redis helper
+  async function persistToRedis(data: YouTuber[]) {
+    setSaving(true);
+    const r = await fetch("/api/admin/youtubers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ youtubers: data }),
+    });
+    if (r.ok) { setSaveMsg("저장 완료"); }
+    else { setSaveMsg("저장 실패"); }
+    setSaving(false);
+    setTimeout(() => setSaveMsg(""), 2000);
+  }
+
+  // Save editing youtuber — auto-persist to Redis
+  async function saveEditing() {
     if (!editing) return;
     const yt = { ...editing, id: editing.id || generateId(editing.name) };
     const idx = youtubers.findIndex(y => y.id === yt.id);
+    let updated: YouTuber[];
     if (idx >= 0) {
-      const updated = [...youtubers];
+      updated = [...youtubers];
       updated[idx] = yt;
-      setYoutubers(updated);
     } else {
-      setYoutubers([...youtubers, yt]);
+      updated = [...youtubers, yt];
     }
+    setYoutubers(updated);
     setEditing(null);
+    await persistToRedis(updated);
   }
 
-  function deleteYoutuber(id: string) {
-    setYoutubers(youtubers.filter(y => y.id !== id));
+  async function deleteYoutuber(id: string) {
+    const updated = youtubers.filter(y => y.id !== id);
+    setYoutubers(updated);
+    await persistToRedis(updated);
   }
 
   // ─── Auth screen ───
@@ -298,11 +317,18 @@ export default function AdminYoutubers() {
                       setEditing({ ...editing, positions: p });
                     }} placeholder="핵심 근거 한 줄"
                       className={`w-full px-2 py-1.5 rounded bg-surface border border-border-subtle text-xs ${MN} text-fg outline-none mb-2`} />
-                    <input value={pos.sourceUrl} onChange={e => {
-                      const p = [...editing.positions]; p[i] = { ...p[i], sourceUrl: e.target.value };
-                      setEditing({ ...editing, positions: p });
-                    }} placeholder="소스 영상 URL"
-                      className={`w-full px-2 py-1.5 rounded bg-surface border border-border-subtle text-xs ${MN} text-fg outline-none`} />
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={pos.sourceUrl} onChange={e => {
+                        const p = [...editing.positions]; p[i] = { ...p[i], sourceUrl: e.target.value };
+                        setEditing({ ...editing, positions: p });
+                      }} placeholder="소스 영상 URL"
+                        className={`w-full px-2 py-1.5 rounded bg-surface border border-border-subtle text-xs ${MN} text-fg outline-none`} />
+                      <input value={pos.sourceTitle ?? ""} onChange={e => {
+                        const p = [...editing.positions]; p[i] = { ...p[i], sourceTitle: e.target.value };
+                        setEditing({ ...editing, positions: p });
+                      }} placeholder="영상 제목 (선택)"
+                        className={`w-full px-2 py-1.5 rounded bg-surface border border-border-subtle text-xs ${MN} text-fg outline-none`} />
+                    </div>
                   </div>
                 ))}
               </div>

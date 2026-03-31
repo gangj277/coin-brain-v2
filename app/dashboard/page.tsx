@@ -49,6 +49,17 @@ const MN = "font-[family-name:var(--font-geist-mono)]";
 function fmt(n: number) { if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`; if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(0)}k`; return `$${n.toFixed(0)}`; }
 function fmtPnl(n: number) { return `${n >= 0 ? "+" : ""}${fmt(n)}`; }
 function fmtPct(n: number) { return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`; }
+function timeAgo(dateStr: string) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}분 전`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "어제";
+  if (days < 7) return `${days}일 전`;
+  return dateStr;
+}
 const TIER_ORDER: Record<string, number> = { S: 0, A: 1, B: 2, C: 3 };
 
 function aggregateTraders(signals: Signal[]): AggregatedTrader[] {
@@ -449,7 +460,7 @@ function YouTuberCard({ youtuber: yt, signals }: { youtuber: YouTuber; signals: 
                   <span className="text-base font-semibold text-fg">{yt.name}</span>
                   <span className={`text-[10px] ${MN} text-fg3`}>{yt.subscribers}</span>
                 </div>
-                {latestPos && <span className={`text-[10px] ${MN} text-fg3`}>최근 업데이트 {latestPos.updatedAt}</span>}
+                {latestPos && <span className={`text-[10px] ${MN} text-fg3`}>최근 업데이트 {timeAgo(latestPos.updatedAt)}</span>}
               </div>
             </div>
             {/* Smart money verdict badge */}
@@ -504,7 +515,7 @@ export default function DashboardList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [view, setView] = useState<"coin" | "trader" | "youtuber">("coin");
+  const [view, setView] = useState<"coin" | "trader" | "youtuber" | "prediction">("coin");
   const [youtubers, setYoutubers] = useState<YouTuber[]>([]);
 
   const fetchData = useCallback(async () => {
@@ -589,28 +600,29 @@ export default function DashboardList() {
           <div className="flex items-center gap-3">
             {/* View Toggle */}
             <div className={`flex items-center text-xs ${MN} bg-inset rounded-lg p-0.5 border border-border-subtle`}>
-              {(["coin", "trader", "youtuber"] as const).map(v => (
+              {(["coin", "trader", "youtuber", "prediction"] as const).map(v => (
                 <button key={v} onClick={() => { setView(v); setSearch(""); }}
-                  className={`px-3 py-1.5 rounded-md cursor-pointer transition-colors ${view === v ? "bg-surface text-fg" : "text-fg3 hover:text-fg"}`}>
-                  {v === "coin" ? "코인" : v === "trader" ? "트레이더" : "유튜버"}
+                  className={`px-3 py-1.5 rounded-md cursor-pointer transition-colors ${view === v ? (v === "prediction" ? "bg-blue/10 text-blue" : "bg-surface text-fg") : "text-fg3 hover:text-fg"}`}>
+                  {v === "coin" ? "코인" : v === "trader" ? "트레이더" : v === "youtuber" ? "유튜버" : "예측마켓"}
                 </button>
               ))}
             </div>
             {/* Search */}
             <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-              placeholder={view === "coin" ? "코인 검색..." : view === "trader" ? "트레이더 검색..." : "유튜버 검색..."}
+              placeholder={view === "coin" ? "코인 검색..." : view === "trader" ? "트레이더 검색..." : view === "youtuber" ? "유튜버 검색..." : ""}
+              disabled={view === "prediction"}
               className={`px-3 py-1.5 rounded-lg bg-surface border border-border-subtle text-xs ${MN} text-fg placeholder:text-fg3/50 outline-none focus:border-green/30 w-40 transition-colors`} />
           </div>
         </div>
       </header>
 
       {/* Pulse */}
-      {!loading && signals.length > 0 && (
+      {!loading && signals.length > 0 && view !== "prediction" && (
         <Pulse signals={signals} stats={stats} topSTier={topSTierSignal} fundingAlertCount={fundingDivergences.length} />
       )}
 
       {/* Quick coins */}
-      {!loading && signals.length > 0 && (() => {
+      {!loading && signals.length > 0 && view !== "prediction" && (() => {
         const pinnedCoins = ["BTC", "ETH", "SOL", "HYPE", "XRP"];
         const items = pinnedCoins.map(coin => {
           const sig = signals.find(s => s.coin === coin);
@@ -731,7 +743,7 @@ export default function DashboardList() {
               </section>
             )}
           </>
-        ) : (
+        ) : view === "youtuber" ? (
           /* ─── YouTuber view ─── */
           (() => {
             const filtered = search
@@ -748,6 +760,61 @@ export default function DashboardList() {
               </section>
             );
           })()
+        ) : (
+          /* ─── Prediction Market view (Coming Soon) ─── */
+          <div className="flex flex-col items-center justify-center py-24">
+            {/* Icon */}
+            <div className="mb-8">
+              <svg width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="40" cy="40" r="38" stroke="#60a5fa" strokeWidth="1" opacity="0.15" />
+                <rect x="12" y="30" width="6" height="16" rx="1.5" fill="#60a5fa" opacity="0.2" />
+                <rect x="22" y="24" width="6" height="20" rx="1.5" fill="#60a5fa" opacity="0.3" />
+                <rect x="32" y="28" width="6" height="14" rx="1.5" fill="#60a5fa" opacity="0.25" />
+                <circle cx="44" cy="32" r="4" stroke="#60a5fa" strokeWidth="1.5" fill="rgba(96,165,250,0.1)" />
+                <path d="M48 30l10-10" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" />
+                <path d="M55 18l3 2 1-4" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M48 34l10 10" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round" />
+                <path d="M55 46l3-2 1 4" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <text x="40" y="62" fill="#60a5fa" fontSize="11" fontFamily="monospace" textAnchor="middle" fontWeight="bold">87%</text>
+              </svg>
+            </div>
+            <span className={`text-[10px] ${MN} px-3 py-1 rounded-full bg-blue/10 text-blue border border-blue/20 mb-5`}>COMING SOON</span>
+            <h2 className="text-2xl font-bold text-fg mb-3">예측 마켓</h2>
+            <p className="text-fg3 text-sm text-center max-w-md mb-8 leading-relaxed">
+              Polymarket 크립토 Up/Down 마켓에서 단기 가격 방향을 예측합니다.<br />
+              87% 승률, 12,160 트레이드 검증 완료. 현재 페이퍼 트레이딩 중입니다.
+            </p>
+            {/* Stats */}
+            <div className="grid grid-cols-4 gap-8 mb-10">
+              {[
+                { value: "87%", label: "승률" },
+                { value: "12,160", label: "검증 트레이드" },
+                { value: "+$6.89", label: "EV/트레이드" },
+                { value: "2.0%", label: "최대 드로다운" },
+              ].map(s => (
+                <div key={s.label} className="text-center">
+                  <div className={`text-xl font-bold ${MN} text-blue`}>{s.value}</div>
+                  <div className={`text-[11px] ${MN} text-fg3 mt-1`}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {/* Strategy summary */}
+            <div className="rounded-xl border border-blue/10 bg-raised p-6 max-w-lg w-full">
+              <div className={`text-[10px] ${MN} text-blue uppercase tracking-widest mb-3`}>Strategy</div>
+              <ul className="space-y-2.5">
+                {[
+                  "BTC/ETH 5분 방향 예측 — Directional Momentum Persistence",
+                  "90일 Binance 실데이터 기반 실증 캘리브레이션",
+                  "Kelly Criterion 포지션 사이징 + 15포인트 리스크 게이트",
+                  "실시간 Polymarket CLOB 오더북 연동",
+                ].map((f, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-fg2">
+                    <span className="mt-1.5 w-1 h-1 rounded-full bg-blue/30 shrink-0" />{f}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
         )}
       </div>
     </div>

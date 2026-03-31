@@ -294,6 +294,72 @@ export function IllustDataGrid() {
   );
 }
 
+// Prediction Market: large illustration (200x160) — candlestick branching into UP/DOWN with 87% gauge
+export function IllustPrediction() {
+  return (
+    <svg width="200" height="160" viewBox="0 0 200 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Background glow */}
+      <circle cx="100" cy="80" r="60" fill="url(#glow-pred)" opacity="0.06" />
+      {/* Candlestick chart body */}
+      <rect x="22" y="65" width="8" height="30" rx="1" stroke="#5a5a66" strokeWidth="1" fill="rgba(90,90,102,0.15)" />
+      <line x1="26" y1="55" x2="26" y2="105" stroke="#5a5a66" strokeWidth="1" />
+      <rect x="36" y="50" width="8" height="25" rx="1" stroke="#34d399" strokeWidth="1" fill="rgba(52,211,153,0.15)" />
+      <line x1="40" y1="42" x2="40" y2="82" stroke="#34d399" strokeWidth="1" />
+      <rect x="50" y="55" width="8" height="20" rx="1" stroke="#f87171" strokeWidth="1" fill="rgba(248,113,113,0.15)" />
+      <line x1="54" y1="48" x2="54" y2="80" stroke="#f87171" strokeWidth="1" />
+      <rect x="64" y="40" width="8" height="30" rx="1" stroke="#34d399" strokeWidth="1" fill="rgba(52,211,153,0.15)" />
+      <line x1="68" y1="32" x2="68" y2="78" stroke="#34d399" strokeWidth="1" />
+      {/* Current price line */}
+      <line x1="78" y1="40" x2="95" y2="40" stroke="#60a5fa" strokeWidth="1.5" strokeDasharray="3 3" />
+      {/* Branch point */}
+      <circle cx="95" cy="40" r="4" stroke="#60a5fa" strokeWidth="2" fill="rgba(96,165,250,0.15)" />
+      {/* UP branch */}
+      <path d="M99 38L130 18" stroke="#34d399" strokeWidth="2" strokeLinecap="round" />
+      <path d="M126 14l4 4 4-6" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <text x="140" y="20" fill="#34d399" fontSize="10" fontFamily="monospace" fontWeight="bold">UP</text>
+      {/* DOWN branch */}
+      <path d="M99 42L130 62" stroke="#f87171" strokeWidth="2" strokeLinecap="round" />
+      <path d="M126 66l4-4 4 6" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <text x="140" y="65" fill="#f87171" fontSize="10" fontFamily="monospace" fontWeight="bold">DOWN</text>
+      {/* Confidence gauge */}
+      <circle cx="100" cy="115" r="22" stroke="#60a5fa" strokeWidth="1" opacity="0.2" />
+      <path d="M80 120 A22 22 0 1 1 118 108" stroke="#60a5fa" strokeWidth="2.5" strokeLinecap="round" />
+      <text x="100" y="118" fill="#60a5fa" fontSize="14" fontFamily="monospace" textAnchor="middle" fontWeight="bold">87%</text>
+      <text x="100" y="130" fill="#5a5a66" fontSize="8" fontFamily="monospace" textAnchor="middle">WIN RATE</text>
+      {/* 5min label */}
+      <rect x="145" y="90" width="40" height="18" rx="4" stroke="#60a5fa" strokeWidth="1" fill="rgba(96,165,250,0.06)" />
+      <text x="165" y="103" fill="#60a5fa" fontSize="9" fontFamily="monospace" textAnchor="middle">5 min</text>
+      {/* Data flow dots */}
+      <circle cx="12" cy="70" r="1.5" fill="#60a5fa" opacity="0.3" />
+      <circle cx="12" cy="80" r="1.5" fill="#60a5fa" opacity="0.4" />
+      <circle cx="12" cy="90" r="1.5" fill="#60a5fa" opacity="0.3" />
+      <defs><radialGradient id="glow-pred"><stop stopColor="#60a5fa" /><stop offset="1" stopColor="transparent" /></radialGradient></defs>
+    </svg>
+  );
+}
+
+// Prediction Market: small roadmap icon (56x56) — binary fork with percentage
+export function IllustPredictionSmall() {
+  return (
+    <svg width="56" height="56" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Mini candlesticks */}
+      <rect x="8" y="20" width="4" height="12" rx="1" fill="#60a5fa" opacity="0.3" />
+      <rect x="15" y="16" width="4" height="14" rx="1" fill="#60a5fa" opacity="0.5" />
+      <rect x="22" y="22" width="4" height="10" rx="1" fill="#60a5fa" opacity="0.4" />
+      {/* Branch point */}
+      <circle cx="32" cy="24" r="3" stroke="#60a5fa" strokeWidth="1.5" fill="rgba(96,165,250,0.12)" />
+      {/* UP arrow */}
+      <path d="M35 22l8-8" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M40 12l3 2 1-3" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      {/* DOWN arrow */}
+      <path d="M35 26l8 8" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M40 36l3-2 1 3" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      {/* Percentage */}
+      <text x="28" y="48" fill="#60a5fa" fontSize="10" fontFamily="monospace" textAnchor="middle" fontWeight="bold">87%</text>
+    </svg>
+  );
+}
+
 export function IllustPipeline() {
   // Horizontal pipeline: data → filter → AI with flowing particles
   return (
