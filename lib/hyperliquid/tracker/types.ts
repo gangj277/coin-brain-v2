@@ -78,3 +78,13 @@ export interface TrackerStats {
   totalChangesEmitted: number;
   uptime: number;
 }
+
+export interface PositionStoreStats {
+  totalTraders: number;
+  wsTraders: number;
+  pollTraders: number;
+  tradersWithPositions: number;
+  totalPositions: number;
+  uniqueCoins: number;
+  recentChanges: number;
+}

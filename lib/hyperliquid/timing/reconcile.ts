@@ -38,10 +38,6 @@ export function resolveCurrentPositionTiming({
     const sameDirection = Math.sign(delta) === direction;
 
     if (sameDirection) {
-      // Earliest same-direction fill = approximate openedAt
-      if (openedAt === null) {
-        openedAt = fill.time;
-      }
       // Latest same-direction fill = lastAddedAt
       lastAddedAt = fill.time;
     }

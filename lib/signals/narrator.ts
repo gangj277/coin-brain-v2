@@ -30,6 +30,17 @@ export interface NarratedSignal extends Signal {
   narrative: string; // backwards compat: joined text
 }
 
+interface AttachedMarketData {
+  markPx: number;
+  prevDayPx: number;
+  dayChange: number;
+  funding: number;
+  fundingAnnual: number;
+  openInterest: number;
+  openInterestUsd: number;
+  dayVolume: number;
+}
+
 // ─── Structured Output Schema ────────────────────────────
 
 const ANALYSIS_SCHEMA = {
@@ -110,7 +121,28 @@ function fmtFundingRate(rate: string): string {
   return `${hourly.toFixed(4)}%/h (연율 ${annual.toFixed(1)}%)`;
 }
 
-function buildSignalSummary(signal: Signal, ctx: AssetContext | undefined): string {
+function buildAttachedAssetContext(market: AttachedMarketData): AssetContext {
+  const markPx = market.markPx.toString();
+  const prevDayPx = market.prevDayPx.toString();
+  const funding = market.funding.toString();
+  const openInterest = market.openInterest.toString();
+
+  return {
+    funding,
+    openInterest,
+    prevDayPx,
+    dayNtlVlm: market.dayVolume.toString(),
+    premium: "0",
+    oraclePx: markPx,
+    markPx,
+    midPx: markPx,
+  };
+}
+
+function buildSignalSummary(
+  signal: Signal & { market?: AttachedMarketData | null },
+  ctx: AssetContext | undefined
+): string {
   const { coin, type, dominantSide, totalTraders, longTraders, shortTraders } = signal;
 
   let marketSection = "";
@@ -153,7 +185,7 @@ ${topTraders}`.trim();
 // ─── Main Export ─────────────────────────────────────────
 
 export async function narrateSignals(
-  signals: Signal[]
+  signals: Array<Signal & { market?: AttachedMarketData | null }>
 ): Promise<NarratedSignal[]> {
   const worthNarrating = signals.filter(
     (s) => s.strength !== "weak" && s.totalTraders >= 3
@@ -164,11 +196,23 @@ export async function narrateSignals(
   }
 
   let assetCtxs = new Map<string, AssetContext>();
-  try {
-    const { contexts } = await getMetaAndAssetCtxs();
-    assetCtxs = contexts;
-  } catch {
-    // continue without market data
+  const attachedMarkets: Array<[string, AssetContext]> = worthNarrating
+    .filter((signal) => signal.market)
+    .map((signal) => [signal.coin, buildAttachedAssetContext(signal.market!)]);
+  if (attachedMarkets.length === worthNarrating.length) {
+    assetCtxs = new Map(attachedMarkets);
+  } else {
+    try {
+      const { contexts } = await getMetaAndAssetCtxs();
+      assetCtxs = contexts;
+      for (const [coin, context] of attachedMarkets) {
+        if (!assetCtxs.has(coin)) {
+          assetCtxs.set(coin, context);
+        }
+      }
+    } catch {
+      assetCtxs = new Map(attachedMarkets);
+    }
   }
 
   const signalsToNarrate = worthNarrating.slice(0, 15);
@@ -222,4 +266,3 @@ ${summaries}`;
     return { ...signal, analysis, narrative };
   });
 }
-

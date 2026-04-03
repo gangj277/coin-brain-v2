@@ -4,6 +4,7 @@ import type {
   TraderTier,
   TrackingMethod,
   PositionChange,
+  PositionStoreStats,
 } from "./types";
 import { diffPositions } from "./differ";
 
@@ -159,7 +160,7 @@ export class PositionStore {
 
   // ─── Stats ──────────────────────────────────────────
 
-  getStats() {
+  getStats(): PositionStoreStats {
     let totalPositions = 0;
     let tradersWithPositions = 0;
     let wsTraders = 0;

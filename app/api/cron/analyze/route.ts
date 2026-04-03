@@ -1,43 +1,59 @@
 import { NextRequest } from "next/server";
-import { redis, KEYS } from "@/lib/redis/client";
-import { narrateSignals } from "@/lib/signals/narrator";
-import type { Signal } from "@/lib/signals/aggregator";
+import { SignalAnalysisService } from "@/lib/pipeline/signal-analysis-service";
+import {
+  RedisSignalSnapshotRepository,
+  type SignalSnapshotRepository,
+} from "@/lib/pipeline/signal-snapshot-repository";
+import { SignalAssemblyService } from "@/lib/pipeline/signal-assembly-service";
 
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export async function GET(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+interface AnalyzeRouteDeps {
+  signalSnapshotRepository?: SignalSnapshotRepository;
+  signalAnalysisService?: SignalAnalysisService;
+  signalAssemblyService?: SignalAssemblyService;
+}
 
-  try {
-    // Read current signals from Redis
-    const raw = await redis.get<string>(KEYS.SIGNALS);
-    if (!raw) {
-      return Response.json({ error: "No signals in Redis" }, { status: 404 });
+export function buildAnalyzeRouteHandler(deps: AnalyzeRouteDeps = {}) {
+  const signalSnapshotRepository =
+    deps.signalSnapshotRepository ?? new RedisSignalSnapshotRepository();
+  const signalAnalysisService =
+    deps.signalAnalysisService ?? new SignalAnalysisService();
+  const signalAssemblyService =
+    deps.signalAssemblyService ?? new SignalAssemblyService();
+
+  return async function GET(request: NextRequest) {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const signals: Signal[] = typeof raw === "string" ? JSON.parse(raw) : raw;
+    try {
+      const baseSnapshot = await signalSnapshotRepository.loadBase();
+      if (!baseSnapshot) {
+        return Response.json({ error: "No base snapshot in Redis" }, { status: 404 });
+      }
 
-    // Generate AI analyses
-    const narrated = await narrateSignals(signals);
+      const analysisMap = await signalAnalysisService.analyze(baseSnapshot);
+      const servedSnapshot = signalAssemblyService.buildServedSnapshot(
+        baseSnapshot,
+        analysisMap
+      );
+      await signalSnapshotRepository.saveServed(servedSnapshot);
 
-    // Store back with analyses
-    await redis.set(KEYS.ANALYSIS, JSON.stringify(
-      narrated
-        .filter((s) => s.analysis)
-        .map((s) => ({ coin: s.coin, analysis: s.analysis, narrative: s.narrative }))
-    ));
-
-    const withAnalysis = narrated.filter((s) => s.analysis).length;
-
-    return Response.json({
-      ok: true,
-      total: signals.length,
-      analyzed: withAnalysis,
-    });
-  } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 500 });
-  }
+      return Response.json({
+        ok: true,
+        total: baseSnapshot.signals.length,
+        analyzed: Object.keys(analysisMap).length,
+      });
+    } catch (error) {
+      return Response.json(
+        { error: (error as Error).message },
+        { status: 500 }
+      );
+    }
+  };
 }
+
+export const GET = buildAnalyzeRouteHandler();
