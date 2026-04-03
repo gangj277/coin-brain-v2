@@ -4,6 +4,8 @@ import {
   RedisSignalSnapshotRepository,
   type SignalSnapshotRepository,
 } from "@/lib/pipeline/signal-snapshot-repository";
+import type { ServedSignalSnapshot } from "@/lib/pipeline/types";
+import { parseJson } from "@/lib/pipeline/repository-utils";
 import {
   detectEvents,
   applyCooldowns,
@@ -54,10 +56,8 @@ export function buildNotifyRouteHandler(deps: NotifyRouteDeps = {}) {
         redis.get<string>(KEYS.NOTIFY_COOLDOWNS),
       ]);
 
-      const previous = previousRaw ? JSON.parse(previousRaw) : null;
-      const cooldowns: CooldownState = cooldownsRaw
-        ? JSON.parse(cooldownsRaw)
-        : {};
+      const previous = parseJson<ServedSignalSnapshot | null>(previousRaw, null);
+      const cooldowns = parseJson<CooldownState>(cooldownsRaw, {});
 
       // Detect events
       const currentTime = now();
