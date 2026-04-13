@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npx --yes tsx --test tests/**/*.test.ts"
+    "test": "npx --yes tsx --test tests/**/*.test.ts",
+    "research:backtest-crowding-alpha": "npx --yes tsx scripts/research/backtest-crowding-alpha.ts",
+    "signals:replay-v2": "npx --yes tsx scripts/replay-signal-engine-v2.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.37.0",

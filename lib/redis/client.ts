@@ -34,6 +34,13 @@ export const KEYS = {
   POSITION_SNAPSHOTS: "positions:snapshots:latest",
   POSITION_TIMINGS: "positions:timings:latest",
   POSITION_TIMING_QUEUE: "positions:timings:queue",
+  POSITION_EVENTS_RECENT: "positions:events:recent",
   NOTIFY_LAST_STATE: "notify:last-state",
   NOTIFY_COOLDOWNS: "notify:cooldowns",
+  SMI_ALL_LATEST: "smi:all:latest",
+  SIGNAL_OUTCOMES_PENDING: "signals:outcomes:pending",
+  SIGNAL_OUTCOMES_STATS: "signals:outcomes:stats",
+  smiHistory: (coin: string) => `smi:${coin.toUpperCase()}:history`,
+  marketContextHistory: (coin: string) =>
+    `market:context:history:${coin.toUpperCase()}`,
 } as const;

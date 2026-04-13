@@ -4,6 +4,7 @@ import {
   getUserFillsByTime,
   type AssetContext,
 } from "@/lib/hyperliquid/client";
+import type { PositionChange } from "@/lib/hyperliquid/tracker/types";
 import {
   applyBackfillResult,
   removeBackfillTask,
@@ -16,14 +17,21 @@ import {
 } from "@/lib/hyperliquid/timing/repository";
 import type { PositionTimingState } from "@/lib/hyperliquid/timing/types";
 import { PositionStore } from "@/lib/hyperliquid/tracker/store";
-import { aggregateSignals } from "@/lib/signals/aggregator";
+import {
+  aggregateSignals,
+  appendSmiHistory,
+  type SignalSmiState,
+} from "@/lib/signals/aggregator";
+import type { SMIHistoryEntry } from "@/lib/signals/smi";
 import { DEFAULT_COLLECTION_CONFIG, type CollectionConfig } from "./config";
+import { appendMarketContextHistory } from "./signal-engine-state-repository";
 import type {
   BaseSignalSnapshot,
-  PipelineStageMetrics,
   SignalMarketData,
+  PipelineStageMetrics,
   TraderUniverseSnapshot,
 } from "./types";
+import type { MarketContextHistoryEntry } from "./signal-engine-state-repository";
 
 function toMarketData(ctx: AssetContext): SignalMarketData {
   const markPx = parseFloat(ctx.markPx);
@@ -49,6 +57,23 @@ export interface PositionCollectionServiceDeps {
   fetchClearinghouseState?: typeof getClearinghouseState;
   fetchMetaAndAssetCtxs?: typeof getMetaAndAssetCtxs;
   fetchUserFillsByTime?: typeof getUserFillsByTime;
+  loadRecentPositionEvents?: () => Promise<PositionChange[]>;
+  saveRecentPositionEvents?: (events: PositionChange[]) => Promise<void>;
+  loadSmiHistory?: (
+    coins: string[]
+  ) => Promise<Record<string, SMIHistoryEntry[]>>;
+  saveSmiHistory?: (
+    historyByCoin: Record<string, SMIHistoryEntry[]>
+  ) => Promise<void>;
+  saveLatestSmi?: (
+    latestByCoin: Record<string, SignalSmiState>
+  ) => Promise<void>;
+  loadMarketContextHistory?: (
+    coins: string[]
+  ) => Promise<Record<string, MarketContextHistoryEntry[]>>;
+  saveMarketContextHistory?: (
+    historyByCoin: Record<string, MarketContextHistoryEntry[]>
+  ) => Promise<void>;
   now?: () => number;
   config?: Partial<CollectionConfig>;
 }
@@ -69,6 +94,27 @@ export class PositionCollectionService {
   private readonly fetchUserFillsByTime: NonNullable<
     PositionCollectionServiceDeps["fetchUserFillsByTime"]
   >;
+  private readonly loadRecentPositionEvents: NonNullable<
+    PositionCollectionServiceDeps["loadRecentPositionEvents"]
+  >;
+  private readonly saveRecentPositionEvents: NonNullable<
+    PositionCollectionServiceDeps["saveRecentPositionEvents"]
+  >;
+  private readonly loadSmiHistory: NonNullable<
+    PositionCollectionServiceDeps["loadSmiHistory"]
+  >;
+  private readonly saveSmiHistory: NonNullable<
+    PositionCollectionServiceDeps["saveSmiHistory"]
+  >;
+  private readonly saveLatestSmi: NonNullable<
+    PositionCollectionServiceDeps["saveLatestSmi"]
+  >;
+  private readonly loadMarketContextHistory: NonNullable<
+    PositionCollectionServiceDeps["loadMarketContextHistory"]
+  >;
+  private readonly saveMarketContextHistory: NonNullable<
+    PositionCollectionServiceDeps["saveMarketContextHistory"]
+  >;
   private readonly now: NonNullable<PositionCollectionServiceDeps["now"]>;
   private readonly config: CollectionConfig;
 
@@ -81,6 +127,17 @@ export class PositionCollectionService {
       deps.fetchMetaAndAssetCtxs ?? getMetaAndAssetCtxs;
     this.fetchUserFillsByTime =
       deps.fetchUserFillsByTime ?? getUserFillsByTime;
+    this.loadRecentPositionEvents =
+      deps.loadRecentPositionEvents ?? (async () => []);
+    this.saveRecentPositionEvents =
+      deps.saveRecentPositionEvents ?? (async () => {});
+    this.loadSmiHistory = deps.loadSmiHistory ?? (async () => ({}));
+    this.saveSmiHistory = deps.saveSmiHistory ?? (async () => {});
+    this.saveLatestSmi = deps.saveLatestSmi ?? (async () => {});
+    this.loadMarketContextHistory =
+      deps.loadMarketContextHistory ?? (async () => ({}));
+    this.saveMarketContextHistory =
+      deps.saveMarketContextHistory ?? (async () => {});
     this.now = deps.now ?? Date.now;
     this.config = { ...DEFAULT_COLLECTION_CONFIG, ...deps.config };
   }
@@ -93,9 +150,13 @@ export class PositionCollectionService {
   ): Promise<BaseSignalSnapshot> {
     const startedAt = this.now();
     const deadline = startedAt + this.config.maxDurationMs - this.config.backfillGuardMs;
-    const timingState = await this.loadTimingState();
+    const [timingState, previousRecentEvents] = await Promise.all([
+      this.loadTimingState(),
+      this.loadRecentPositionEvents(),
+    ]);
     const store = new PositionStore();
     const currentStates = new Map<string, Awaited<ReturnType<typeof getClearinghouseState>>>();
+    const currentCycleEvents: PositionChange[] = [];
     const rankByAddress = new Map(
       universe.traders.map((trader) => [trader.address.toLowerCase(), trader])
     );
@@ -107,7 +168,8 @@ export class PositionCollectionService {
           const address = trader.address.toLowerCase();
           store.addTrader(address, trader.tier, trader.score, "polling");
           const state = await this.fetchClearinghouseState(address);
-          store.updateState(address, state);
+          const changes = store.updateState(address, state);
+          currentCycleEvents.push(...changes);
           currentStates.set(address, state);
           syncPositionTimingForTrader({
             address,
@@ -202,12 +264,59 @@ export class PositionCollectionService {
       // Continue with signal data even when market enrichment is unavailable.
     }
 
-    const signals = aggregateSignals(store, timingState.records).map((signal) => ({
+    const trackedCoins = [...new Set(
+      store.getAllPositions().flatMap((trader) => trader.positions.map((position) => position.coin))
+    )];
+    const [smiHistoryByCoin, marketHistoryByCoin] = await Promise.all([
+      this.loadSmiHistory(trackedCoins),
+      this.loadMarketContextHistory(Object.keys(market)),
+    ]);
+
+    const recentEvents = [...previousRecentEvents, ...currentCycleEvents].filter(
+      (event) => startedAt - event.timestamp <= 6 * 60 * 60 * 1000
+    );
+
+    const signals = aggregateSignals(store, timingState.records, {
+      marketByCoin: market,
+      recentEvents,
+      smiHistoryByCoin,
+      now: startedAt,
+    }).map((signal) => ({
       ...signal,
       market: market[signal.coin] ?? null,
     }));
 
-    await this.saveTimingState(timingState);
+    const nextSmiHistoryByCoin: Record<string, SMIHistoryEntry[]> = {
+      ...smiHistoryByCoin,
+    };
+    const latestSmiByCoin: Record<string, SignalSmiState> = {};
+    for (const signal of signals) {
+      if (!signal.smi) continue;
+      latestSmiByCoin[signal.coin] = signal.smi;
+      nextSmiHistoryByCoin[signal.coin] = appendSmiHistory(
+        smiHistoryByCoin[signal.coin] ?? [],
+        signal.smi
+      );
+    }
+
+    const nextMarketHistoryByCoin: Record<string, MarketContextHistoryEntry[]> = {
+      ...marketHistoryByCoin,
+    };
+    for (const [coin, marketData] of Object.entries(market)) {
+      nextMarketHistoryByCoin[coin] = appendMarketContextHistory(
+        marketHistoryByCoin[coin] ?? [],
+        marketData,
+        startedAt
+      );
+    }
+
+    await Promise.all([
+      this.saveTimingState(timingState),
+      this.saveRecentPositionEvents(recentEvents),
+      this.saveSmiHistory(nextSmiHistoryByCoin),
+      this.saveLatestSmi(latestSmiByCoin),
+      this.saveMarketContextHistory(nextMarketHistoryByCoin),
+    ]);
 
     const completedAt = this.now();
     const metrics: PipelineStageMetrics = {
@@ -231,6 +340,7 @@ export class PositionCollectionService {
         universeRefreshedAt: universe.refreshedAt,
         timingQueueRemaining: timingState.queue.length,
         fallbackUniverseRefresh: options?.fallbackUniverseRefresh ?? false,
+        recentEventsTracked: recentEvents.length,
       },
     };
   }

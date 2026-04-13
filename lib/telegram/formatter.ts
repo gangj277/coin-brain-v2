@@ -74,6 +74,17 @@ function buildBody(signal: ServedSignal): string {
   lines.push(`총 포지션: ${fmtUsd(signal.totalValueUsd)} | Conviction: ${signal.conviction}%`);
   lines.push(`평균 레버리지: ${signal.avgLeverage}x | 진입가: ${fmtPrice(signal.avgEntryPx)}`);
 
+  if (signal.scoring?.v2) {
+    lines.push(
+      `정렬: ${signal.scoring.v2.alignmentBand} | Velocity ${signal.scoring.v2.velocity.score} | Market Adj ${signal.scoring.v2.marketAdjustment >= 0 ? "+" : ""}${signal.scoring.v2.marketAdjustment}`
+    );
+  }
+  if (signal.smi) {
+    lines.push(
+      `SMI ${signal.smi.smi} (${signal.smi.signal}) | Confirmed ${signal.smi.confirmed ? "Y" : "N"} | Persistence ${signal.smi.persistenceCount}`
+    );
+  }
+
   // Market data if available
   if (signal.market) {
     const m = signal.market;

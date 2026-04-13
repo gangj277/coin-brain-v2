@@ -117,6 +117,7 @@ export class PositionStore {
   getAllPositions(): {
     address: string;
     tier: TraderTier;
+    accountValue: number;
     positions: {
       coin: string;
       side: "LONG" | "SHORT";
@@ -137,6 +138,9 @@ export class PositionStore {
       result.push({
         address: trader.address,
         tier: trader.tier,
+        accountValue: trader.state
+          ? parseFloat(trader.state.marginSummary.accountValue)
+          : 0,
         positions: trader.state.assetPositions.map((ap) => {
           const p = ap.position;
           return {

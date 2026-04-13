@@ -32,21 +32,202 @@ export interface AlertEvent {
 // ─── Cooldown State ─────────────────────────────────────
 
 export interface CooldownState {
-  /** coin → timestamp of last alert sent */
-  [coin: string]: number;
+  /** `${coin}:${eventType}` → timestamp of last alert sent */
+  [key: string]: number;
 }
 
-const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes per coin
+const COOLDOWN_MS: Record<AlertEventType, number> = {
+  new_signal: 30 * 60 * 1000,
+  stier_surge: 20 * 60 * 1000,
+  strength_upgrade: 30 * 60 * 1000,
+  consensus_formed: 60 * 60 * 1000,
+  side_flip: 15 * 60 * 1000,
+};
 
-function isOnCooldown(coin: string, cooldowns: CooldownState, now: number): boolean {
-  const lastSent = cooldowns[coin];
+function getCooldownKey(coin: string, type: AlertEventType) {
+  return `${coin}:${type}`;
+}
+
+function isOnCooldown(
+  coin: string,
+  type: AlertEventType,
+  cooldowns: CooldownState,
+  now: number
+): boolean {
+  const lastSent = cooldowns[getCooldownKey(coin, type)] ?? cooldowns[coin];
   if (!lastSent) return false;
-  return now - lastSent < COOLDOWN_MS;
+  return now - lastSent < COOLDOWN_MS[type];
 }
 
 // ─── Strength Ordering ──────────────────────────────────
 
 const STRENGTH_RANK = { weak: 0, moderate: 1, strong: 2 } as const;
+const EVENT_QUALITY_FLOOR: Record<AlertEventType, number> = {
+  new_signal: 7,
+  stier_surge: 6.5,
+  strength_upgrade: 7,
+  consensus_formed: 7,
+  side_flip: 8,
+};
+
+function getAlignmentBand(signal: ServedSignal) {
+  if (signal.scoring?.v2.alignmentBand) {
+    return signal.scoring.v2.alignmentBand;
+  }
+  if (signal.type === "consensus") return "consensus";
+  if (signal.type === "divergence") return "divergence";
+  return "near_consensus";
+}
+
+function getEffectiveTraders(signal: ServedSignal) {
+  return signal.scoring?.v2.effectiveTraders ?? signal.totalTraders;
+}
+
+function getVelocityScore(signal: ServedSignal) {
+  return signal.scoring?.v2.velocity.score ?? 0;
+}
+
+function getMarketAdjustment(signal: ServedSignal) {
+  return signal.scoring?.v2.marketAdjustment ?? 0;
+}
+
+function getSmiDirection(signal: ServedSignal): "LONG" | "SHORT" | null {
+  const smiSignal = signal.smi?.signal;
+  if (smiSignal === "LONG" || smiSignal === "STRONG_LONG") return "LONG";
+  if (smiSignal === "SHORT" || smiSignal === "STRONG_SHORT") return "SHORT";
+  return null;
+}
+
+function isMeaningfulAlertSignal(
+  signal: ServedSignal,
+  eventType: AlertEventType
+) {
+  if (signal.strength === "weak" || signal.totalTraders < 3) {
+    return false;
+  }
+
+  const alignmentBand = getAlignmentBand(signal);
+  if (alignmentBand === "divergence" || alignmentBand === "counter_consensus") {
+    return false;
+  }
+
+  const velocity = getVelocityScore(signal);
+  const effectiveTraders = getEffectiveTraders(signal);
+  const marketAdjustment = getMarketAdjustment(signal);
+  const smiDirection = getSmiDirection(signal);
+  const alignedDirectionalSmi =
+    smiDirection !== null && smiDirection === signal.dominantSide;
+  const alignedConfirmedSmi =
+    alignedDirectionalSmi && Boolean(signal.smi?.confirmed);
+  const conflictingConfirmedSmi =
+    Boolean(signal.smi?.confirmed) &&
+    smiDirection !== null &&
+    smiDirection !== signal.dominantSide;
+
+  if (conflictingConfirmedSmi) {
+    return false;
+  }
+
+  if (marketAdjustment <= -10 && !alignedConfirmedSmi) {
+    return false;
+  }
+
+  if (eventType === "new_signal") {
+    const structuralEntry =
+      signal.totalTraders >= 4 ||
+      signal.sTierCount >= 2 ||
+      alignedConfirmedSmi;
+    if (!structuralEntry) {
+      return false;
+    }
+  }
+
+  if (signal.strength === "moderate" && !alignedConfirmedSmi) {
+    const moderateMomentumCase =
+      signal.sTierCount >= 2 &&
+      effectiveTraders >= 6 &&
+      velocity >= 70 &&
+      marketAdjustment >= 0;
+    if (!moderateMomentumCase) {
+      return false;
+    }
+  }
+
+  if (eventType === "side_flip") {
+    if (
+      signal.strength !== "strong" ||
+      !alignedConfirmedSmi ||
+      velocity < 55 ||
+      marketAdjustment <= -8
+    ) {
+      return false;
+    }
+  }
+
+  let qualityScore = 0;
+
+  qualityScore += signal.strength === "strong" ? 4 : 1;
+  qualityScore += alignmentBand === "consensus" ? 3 : 2;
+
+  if (signal.sTierCount >= 3) {
+    qualityScore += 2;
+  } else if (signal.sTierCount >= 2) {
+    qualityScore += 1;
+  }
+
+  if (signal.totalTraders >= 5) {
+    qualityScore += 1;
+  }
+
+  if (effectiveTraders >= 8) {
+    qualityScore += 2;
+  } else if (effectiveTraders >= 5) {
+    qualityScore += 1;
+  }
+
+  if (signal.conviction >= 85) {
+    qualityScore += 2;
+  } else if (signal.conviction >= 75) {
+    qualityScore += 1;
+  }
+
+  if (velocity >= 75) {
+    qualityScore += 2;
+  } else if (velocity >= 55) {
+    qualityScore += 1;
+  }
+
+  if (marketAdjustment >= 8) {
+    qualityScore += 1.5;
+  } else if (marketAdjustment > 0) {
+    qualityScore += 0.5;
+  } else if (marketAdjustment <= -8) {
+    qualityScore -= 2;
+  } else if (marketAdjustment <= -4) {
+    qualityScore -= 1;
+  }
+
+  if (alignedConfirmedSmi) {
+    qualityScore += 3;
+  } else if (alignedDirectionalSmi) {
+    qualityScore += 1;
+  }
+
+  if (signal.smi?.confidence === "high") {
+    qualityScore += 1;
+  } else if (signal.smi?.confidence === "medium") {
+    qualityScore += 0.5;
+  }
+
+  if (eventType === "stier_surge") {
+    qualityScore += 1;
+  }
+  if (eventType === "consensus_formed") {
+    qualityScore += 1;
+  }
+
+  return qualityScore >= EVENT_QUALITY_FLOOR[eventType];
+}
 
 // ─── Detector ───────────────────────────────────────────
 
@@ -70,13 +251,15 @@ export function detectEvents(
     // Skip weak signals entirely
     if (signal.strength === "weak") continue;
 
-    // Skip if on cooldown
-    if (isOnCooldown(signal.coin, cooldowns, now)) continue;
-
     const prev = prevByCoin.get(signal.coin);
 
     // ── New signal: not in previous snapshot ──
-    if (!prev && signal.totalTraders >= 3) {
+    if (
+      !prev &&
+      isMeaningfulAlertSignal(signal, "new_signal") &&
+      signal.totalTraders >= 3 &&
+      !isOnCooldown(signal.coin, "new_signal", cooldowns, now)
+    ) {
       events.push({
         type: "new_signal",
         signal,
@@ -90,7 +273,11 @@ export function detectEvents(
 
     // ── S-tier surge: 2+ more S-tier traders ──
     const sTierDelta = signal.sTierCount - prev.sTierCount;
-    if (sTierDelta >= 2) {
+    if (
+      sTierDelta >= 2 &&
+      isMeaningfulAlertSignal(signal, "stier_surge") &&
+      !isOnCooldown(signal.coin, "stier_surge", cooldowns, now)
+    ) {
       events.push({
         type: "stier_surge",
         signal,
@@ -101,7 +288,11 @@ export function detectEvents(
     }
 
     // ── Strength upgrade: weak→moderate, moderate→strong ──
-    if (STRENGTH_RANK[signal.strength] > STRENGTH_RANK[prev.strength]) {
+    if (
+      STRENGTH_RANK[signal.strength] > STRENGTH_RANK[prev.strength] &&
+      isMeaningfulAlertSignal(signal, "strength_upgrade") &&
+      !isOnCooldown(signal.coin, "strength_upgrade", cooldowns, now)
+    ) {
       events.push({
         type: "strength_upgrade",
         signal,
@@ -112,7 +303,12 @@ export function detectEvents(
     }
 
     // ── Consensus formed: type changed to consensus ──
-    if (signal.type === "consensus" && prev.type !== "consensus") {
+    if (
+      signal.type === "consensus" &&
+      prev.type !== "consensus" &&
+      isMeaningfulAlertSignal(signal, "consensus_formed") &&
+      !isOnCooldown(signal.coin, "consensus_formed", cooldowns, now)
+    ) {
       events.push({
         type: "consensus_formed",
         signal,
@@ -126,7 +322,9 @@ export function detectEvents(
     if (
       prev.dominantSide !== "SPLIT" &&
       signal.dominantSide !== "SPLIT" &&
-      prev.dominantSide !== signal.dominantSide
+      prev.dominantSide !== signal.dominantSide &&
+      isMeaningfulAlertSignal(signal, "side_flip") &&
+      !isOnCooldown(signal.coin, "side_flip", cooldowns, now)
     ) {
       events.push({
         type: "side_flip",
@@ -154,12 +352,12 @@ export function applyCooldowns(
 ): CooldownState {
   const updated = { ...cooldowns };
   for (const event of events) {
-    updated[event.signal.coin] = now;
+    updated[getCooldownKey(event.signal.coin, event.type)] = now;
   }
   // Prune old entries (>2 hours)
   const cutoff = now - 2 * 60 * 60 * 1000;
-  for (const [coin, ts] of Object.entries(updated)) {
-    if (ts < cutoff) delete updated[coin];
+  for (const [key, ts] of Object.entries(updated)) {
+    if (ts < cutoff) delete updated[key];
   }
   return updated;
 }

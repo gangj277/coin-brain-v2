@@ -55,6 +55,7 @@ export interface BaseSignalSnapshot {
     universeRefreshedAt: number;
     timingQueueRemaining: number;
     fallbackUniverseRefresh: boolean;
+    recentEventsTracked?: number;
   };
 }
 

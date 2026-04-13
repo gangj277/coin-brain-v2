@@ -1,6 +1,15 @@
 import { NextRequest } from "next/server";
 import { PositionCollectionService } from "@/lib/pipeline/position-collection-service";
 import {
+  RedisSignalEngineStateRepository,
+  type SignalEngineStateRepository,
+} from "@/lib/pipeline/signal-engine-state-repository";
+import {
+  RedisSignalOutcomeRepository,
+  registerPendingServedSignals,
+  type SignalOutcomeRepository,
+} from "@/lib/pipeline/signal-outcome-repository";
+import {
   RedisSignalSnapshotRepository,
   type SignalSnapshotRepository,
 } from "@/lib/pipeline/signal-snapshot-repository";
@@ -17,6 +26,8 @@ export const maxDuration = 60;
 interface CollectRouteDeps {
   traderUniverseRepository?: TraderUniverseRepository;
   signalSnapshotRepository?: SignalSnapshotRepository;
+  signalEngineStateRepository?: SignalEngineStateRepository;
+  signalOutcomeRepository?: SignalOutcomeRepository;
   traderUniverseService?: TraderUniverseService;
   positionCollectionService?: PositionCollectionService;
   signalAssemblyService?: SignalAssemblyService;
@@ -28,13 +39,32 @@ export function buildCollectRouteHandler(deps: CollectRouteDeps = {}) {
     deps.traderUniverseRepository ?? new RedisTraderUniverseRepository();
   const signalSnapshotRepository =
     deps.signalSnapshotRepository ?? new RedisSignalSnapshotRepository();
+  const signalEngineStateRepository =
+    deps.signalEngineStateRepository ?? new RedisSignalEngineStateRepository();
+  const signalOutcomeRepository =
+    deps.signalOutcomeRepository ?? new RedisSignalOutcomeRepository();
   const traderUniverseService =
     deps.traderUniverseService ??
     new TraderUniverseService({
       repository: traderUniverseRepository,
     });
   const positionCollectionService =
-    deps.positionCollectionService ?? new PositionCollectionService();
+    deps.positionCollectionService ??
+    new PositionCollectionService({
+      loadRecentPositionEvents: () =>
+        signalEngineStateRepository.loadRecentPositionEvents(),
+      saveRecentPositionEvents: (events) =>
+        signalEngineStateRepository.saveRecentPositionEvents(events),
+      loadSmiHistory: (coins) => signalEngineStateRepository.loadSmiHistory(coins),
+      saveSmiHistory: (historyByCoin) =>
+        signalEngineStateRepository.saveSmiHistory(historyByCoin),
+      saveLatestSmi: (latestByCoin) =>
+        signalEngineStateRepository.saveLatestSmi(latestByCoin),
+      loadMarketContextHistory: (coins) =>
+        signalEngineStateRepository.loadMarketContextHistory(coins),
+      saveMarketContextHistory: (historyByCoin) =>
+        signalEngineStateRepository.saveMarketContextHistory(historyByCoin),
+    });
   const signalAssemblyService =
     deps.signalAssemblyService ?? new SignalAssemblyService();
   const now = deps.now ?? Date.now;
@@ -62,6 +92,10 @@ export function buildCollectRouteHandler(deps: CollectRouteDeps = {}) {
         carriedAnalysis
       );
       await signalSnapshotRepository.saveServed(servedSnapshot);
+      await registerPendingServedSignals({
+        repository: signalOutcomeRepository,
+        snapshot: servedSnapshot,
+      });
 
       const duration = now() - startedAt;
       return Response.json({

@@ -21,6 +21,16 @@ interface MarketData {
   markPx: number; prevDayPx: number; dayChange: number; funding: number; fundingAnnual: number;
   openInterest: number; openInterestUsd: number; dayVolume: number;
 }
+interface SignalScoring {
+  v2?: {
+    alignmentBand: "consensus" | "near_consensus" | "divergence" | "counter_consensus";
+    marketAdjustment: number;
+    velocity: { score: number };
+  };
+}
+interface SignalSmi {
+  smi: number; signal: string; confirmed: boolean; persistenceCount: number;
+}
 interface Signal {
   coin: string; type: "consensus" | "divergence" | "emerging"; strength: "strong" | "moderate" | "weak";
   dominantSide: "LONG" | "SHORT" | "SPLIT"; conviction: number; totalTraders: number;
@@ -28,6 +38,7 @@ interface Signal {
   shortValueUsd: number; avgLeverage: number; totalUnrealizedPnl: number;
   sTierCount: number; aTierCount: number; positions: TraderPosition[];
   narrative: string; analysis: SignalAnalysis | null; market: MarketData | null;
+  scoring?: SignalScoring; smi?: SignalSmi;
 }
 interface Stats { totalTraders: number; tradersWithPositions: number; totalPositions: number; }
 interface AggregatedTrader {
@@ -80,6 +91,23 @@ function aggregateTraders(signals: Signal[]): AggregatedTrader[] {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div className={`text-[10px] ${MN} text-fg3 uppercase tracking-widest mb-3`}>{children}</div>;
+}
+
+function alignmentBandLabel(signal: Signal) {
+  const band = signal.scoring?.v2?.alignmentBand;
+  if (band === "consensus") return "컨센서스";
+  if (band === "near_consensus") return "근접합의";
+  if (band === "divergence") return "다이버전스";
+  if (band === "counter_consensus") return "역합의";
+  return signal.type === "consensus" ? "컨센서스" : signal.type === "divergence" ? "다이버전스" : "이머징";
+}
+
+function alignmentBandTone(signal: Signal) {
+  const band = signal.scoring?.v2?.alignmentBand;
+  if (band === "consensus") return "text-green bg-green/10";
+  if (band === "near_consensus") return "text-blue bg-blue/10";
+  if (band === "counter_consensus") return "text-red bg-red/10";
+  return signal.type === "divergence" ? "text-amber bg-amber/10" : "text-blue bg-blue/10";
 }
 
 // ─── Pulse Strip (Enhanced) ─────────────────────────────
@@ -170,6 +198,14 @@ function SpotlightCard({ signal: s, featured }: { signal: Signal; featured?: boo
               <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded-full font-semibold shrink-0 ${s.dominantSide === "LONG" ? "bg-green/10 text-green" : s.dominantSide === "SHORT" ? "bg-red/10 text-red" : "bg-amber/10 text-amber"}`}>
                 {s.dominantSide === "LONG" ? "롱" : s.dominantSide === "SHORT" ? "숏" : "양방향"}
               </span>
+              <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded shrink-0 ${alignmentBandTone(s)}`}>
+                {alignmentBandLabel(s)}
+              </span>
+              {s.smi && (
+                <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded shrink-0 ${s.smi.confirmed ? "bg-cyan/10 text-cyan" : "bg-fg3/10 text-fg3"}`}>
+                  SMI {s.smi.smi}
+                </span>
+              )}
               {s.analysis && (
                 <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded shrink-0 ${
                   s.analysis.sentiment === "bullish" ? "bg-green-dim text-green"
@@ -195,6 +231,11 @@ function SpotlightCard({ signal: s, featured }: { signal: Signal; featured?: boo
             <span className={`text-xs ${MN} text-fg3`}>{s.totalTraders}명</span>
             {s.sTierCount > 0 && <span className={`text-xs ${MN} text-amber font-semibold`}>S×{s.sTierCount}</span>}
             {s.aTierCount > 0 && <span className={`text-xs ${MN} text-blue`}>A×{s.aTierCount}</span>}
+            {s.scoring?.v2 && (
+              <span className={`text-[10px] ${MN} ${s.scoring.v2.velocity.score >= 70 ? "text-cyan" : "text-fg3"}`}>
+                V {s.scoring.v2.velocity.score}
+              </span>
+            )}
             <div className="flex items-center gap-1.5 flex-1 min-w-0">
               <span className={`text-[10px] ${MN} text-green shrink-0`}>{s.longTraders}</span>
               <div className="flex-1 ratio-bar h-[2px]"><span style={{ width: `${lr}%` }} /></div>
@@ -233,6 +274,15 @@ function SpotlightCard({ signal: s, featured }: { signal: Signal; featured?: boo
             </>
           )}
 
+          {(s.scoring?.v2 || s.smi) && (
+            <div className={`mt-3 flex items-center gap-3 flex-wrap text-[10px] ${MN} text-fg3`}>
+              {s.scoring?.v2 && <span>정렬 {alignmentBandLabel(s)}</span>}
+              {s.scoring?.v2 && <span>Velocity {s.scoring.v2.velocity.score}</span>}
+              {s.scoring?.v2 && <span>Adj {s.scoring.v2.marketAdjustment >= 0 ? "+" : ""}{s.scoring.v2.marketAdjustment}</span>}
+              {s.smi && <span>SMI {s.smi.smi} {s.smi.confirmed ? "확정" : "관찰"}</span>}
+            </div>
+          )}
+
           {/* Funding divergence alert (featured only) */}
           {featured && hasFundingDivergence && m && (
             <div className={`mt-3 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber/5 border border-amber/15 text-xs ${MN} text-amber`}>
@@ -263,7 +313,11 @@ function CompactSignalCard({ signal: s }: { signal: Signal }) {
               <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded-full font-semibold ${s.dominantSide === "LONG" ? "bg-green/10 text-green" : s.dominantSide === "SHORT" ? "bg-red/10 text-red" : "bg-amber/10 text-amber"}`}>
                 {s.dominantSide === "LONG" ? "롱" : s.dominantSide === "SHORT" ? "숏" : "양방향"}
               </span>
+              <span className={`text-[10px] ${MN} px-1.5 py-0.5 rounded ${alignmentBandTone(s)}`}>
+                {alignmentBandLabel(s)}
+              </span>
               {s.sTierCount > 0 && <span className={`text-[10px] ${MN} text-amber`}>S×{s.sTierCount}</span>}
+              {s.smi && <span className={`text-[10px] ${MN} ${s.smi.confirmed ? "text-cyan" : "text-fg3"}`}>SMI {s.smi.smi}</span>}
             </div>
             <div className="flex items-center gap-2">
               <span className={`text-sm font-semibold ${MN}`}>{fmt(s.totalValueUsd)}</span>
@@ -278,6 +332,7 @@ function CompactSignalCard({ signal: s }: { signal: Signal }) {
               <span className={`text-xs ${MN} ${s.conviction >= 80 ? "text-green" : "text-fg3"}`}>{s.conviction}%</span>
             </div>
             <span className={`text-[10px] ${MN} text-fg3`}>{s.totalTraders}명</span>
+            {s.scoring?.v2 && <span className={`text-[10px] ${MN} text-cyan`}>V{s.scoring.v2.velocity.score}</span>}
             <div className="flex items-center gap-1.5 flex-1">
               <div className="flex-1 ratio-bar h-[2px]"><span style={{ width: `${lr}%` }} /></div>
             </div>
@@ -314,9 +369,9 @@ function SignalTable({ signals }: { signals: Signal[] }) {
               </div>
               {/* Type */}
               <span className={`text-[10px] ${
-                s.type === "consensus" ? "text-green" : s.type === "divergence" ? "text-amber" : "text-blue"
+                alignmentBandLabel(s) === "컨센서스" ? "text-green" : alignmentBandLabel(s) === "다이버전스" ? "text-amber" : "text-blue"
               }`}>
-                {s.type === "consensus" ? "컨센서스" : s.type === "divergence" ? "다이버전스" : "이머징"}
+                {alignmentBandLabel(s)}
               </span>
               {/* Conviction */}
               <div className="flex items-center gap-1.5">

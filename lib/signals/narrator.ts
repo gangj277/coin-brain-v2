@@ -170,6 +170,12 @@ function buildSignalSummary(
     .join("\n");
 
   const leverages = signal.positions.map((p) => p.leverage);
+  const alignmentBand = signal.scoring?.v2?.alignmentBand ?? signal.type;
+  const velocity = signal.scoring?.v2?.velocity.score ?? 0;
+  const marketAdjustment = signal.scoring?.v2?.marketAdjustment ?? 0;
+  const smi = signal.smi?.smi ?? 0;
+  const smiSignal = signal.smi?.signal ?? "NEUTRAL";
+  const smiConfirmed = signal.smi?.confirmed ? "yes" : "no";
 
   return `코인: ${coin}
 ${marketSection}
@@ -177,6 +183,8 @@ ${marketSection}
 ${totalTraders}명 (L:${longTraders} $${(signal.longValueUsd / 1e6).toFixed(1)}M / S:${shortTraders} $${(signal.shortValueUsd / 1e6).toFixed(1)}M)
 S-tier: ${signal.sTierCount} | A-tier: ${signal.aTierCount} | Avg Lev: ${signal.avgLeverage}x (${Math.min(...leverages)}~${Math.max(...leverages)}x)
 합산 uPnL: ${signal.totalUnrealizedPnl >= 0 ? "+" : ""}$${(signal.totalUnrealizedPnl / 1e3).toFixed(0)}k
+정렬 밴드: ${alignmentBand} | Velocity: ${velocity} | MarketAdj: ${marketAdjustment >= 0 ? "+" : ""}${marketAdjustment}
+SMI: ${smi} (${smiSignal}) | Confirmed: ${smiConfirmed}
 
 트레이더:
 ${topTraders}`.trim();
@@ -226,7 +234,7 @@ export async function narrateSignals(
 각 분석의 4개 섹션:
 - marketContext: 시장 데이터(가격, 펀딩, OI) 기반 현재 상황. 숫자 인용 필수.
 - positionAnalysis: 트레이더들이 왜 이 포지션을 잡았는지, 진입가와 현재가 관계, ROE 상태. S-tier의 행동 특히 주목.
-- riskAssessment: 청산 거리, 레버리지 집중도, 펀딩 비용, 반대 포지션 위험. 구체적 청산가 인용.
+- riskAssessment: 청산 거리, 레버리지 집중도, 펀딩 비용, 반대 포지션 위험. Velocity와 SMI confirmation이 높을수록 왜 그게 중요하거나 위험한지 설명. 구체적 청산가 인용.
 - conclusion: 핵심 판단 한 줄. "~일 수 있다"가 아니라 데이터에서 읽히는 팩트 기반.
 
 sentiment: bullish/bearish/neutral/conflicted
