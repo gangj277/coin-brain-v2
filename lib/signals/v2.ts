@@ -160,7 +160,12 @@ export const VIABILITY = {
 } as const;
 
 // ── Trade trigger gate ──────────────────────────────────────
-export const TRADE_TRIGGER_GATE = 75;
+// 65 is the "meaningful trigger" bar. Calibrated so:
+//   - With SMI NEUTRAL (normal until history warms up over ~30m),
+//     only top-decile signals (strong + high S-tier + high velocity + idio alpha) pass
+//   - With SMI confirmed + aligned, score lifts ~20 pts so moderate signals
+//     with strong confirmation can also trigger.
+export const TRADE_TRIGGER_GATE = 65;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -628,14 +633,14 @@ export function computeTradeTriggerScore(
     };
   }
 
-  // Core quality: scaled v2 totalScore. Max 130 → max 40 pts.
-  const coreQuality = clamp((input.v2TotalScore / 130) * 40, 0, 40);
+  // Core quality: scaled v2 totalScore. Max ~130 → max 45 pts.
+  const coreQuality = clamp((input.v2TotalScore / 130) * 45, 0, 45);
 
-  // Idiosyncratic alpha: 0-100 → 0-20 pts. Rewards signals that differ from market beta.
+  // Idiosyncratic alpha: 0-100 → 0-22 pts. Rewards signals that differ from market beta.
   const idioAlpha = clamp(
-    (input.crossSectional.idiosyncraticAlpha / 100) * 20,
+    (input.crossSectional.idiosyncraticAlpha / 100) * 22,
     0,
-    20
+    22
   );
 
   // SMI alignment: up to 25. -10 if SMI confirmed in OPPOSITE direction.
