@@ -1,8 +1,9 @@
 /**
  * Signal Aggregator — clusters raw positions into actionable trading signals.
  *
- * The v2 engine keeps legacy scoring nested for compatibility, but the live
- * top-level fields now come from the v2 scoring layer.
+ * Two-pass pipeline:
+ *  1) Per-coin v2 scoring (conviction, strength, velocity, market adjustment, concentration)
+ *  2) Cross-sectional normalization (subtract market beta) + viability floors + trade-trigger composite
  */
 
 import type { PositionChange } from "@/lib/hyperliquid/tracker/types";
@@ -20,22 +21,33 @@ import {
   type SMIHistoryEntry,
 } from "./smi";
 import {
+  applyViabilityFloor,
   buildLegacyScore,
   buildPositionWeight,
   classifyStrength,
   computeAlignmentBand,
+  computeCrossSectionalAdjustment,
   computeDominantSide,
   computeMarketAdjustment,
+  computeMarketBaseline,
   computeScaleBonus,
+  computeTradeTriggerScore,
   computeVelocityScore,
   mapAlignmentBandToLegacyType,
   roundTo,
   TIER_WEIGHT,
   type AlignmentBand,
+  type CrossSectionalAdjustmentSummary,
+  type MarketBaseline,
   type SignalMarketContext,
   type SignalScoring,
+  type SignalScoringV2,
   type SignalStrength,
   type SignalType,
+  type TradeTriggerBreakdown,
+  type ViabilityAdjustmentSummary,
+  type VelocitySummary,
+  type ConcentrationSummary,
 } from "./v2";
 
 export { appendSmiHistory };
@@ -101,6 +113,40 @@ interface GroupMetrics {
   totalValueUsd: number;
   sTierCount: number;
   aTierCount: number;
+  sTierLongCount: number;
+  sTierShortCount: number;
+}
+
+interface Pass1Result {
+  coin: string;
+  positions: TraderPosition[];
+  metrics: GroupMetrics;
+  legacy: ReturnType<typeof buildLegacyScore>;
+  /** Intermediate v2 — not final (cross-sectional + viability + tradeTrigger applied in pass 2) */
+  v2Draft: {
+    rawConviction: number;
+    alignmentBand: AlignmentBand;
+    countAlignment: number;
+    valueAlignment: number;
+    sTierAlignment: number;
+    freshnessWeightedLongs: number;
+    freshnessWeightedShorts: number;
+    effectiveTraders: number;
+    marketAdjustment: number;
+    velocity: VelocitySummary;
+    concentration: ConcentrationSummary;
+    dominantSide: "LONG" | "SHORT" | "SPLIT";
+    weightedLongValue: number;
+    weightedShortValue: number;
+    scaleScore: number;
+    tierScore: number;
+    convictionScoreSub: number;
+    velocityScoreSub: number;
+  };
+  smi: SignalSmiState;
+  avgLeverage: number;
+  avgEntryPx: number;
+  totalPnl: number;
 }
 
 function toTraderPositions(
@@ -153,17 +199,23 @@ function computeGroupMetrics(positions: TraderPosition[]): GroupMetrics {
     totalValueUsd: longValueUsd + shortValueUsd,
     sTierCount: positions.filter((position) => position.tier === "S").length,
     aTierCount: positions.filter((position) => position.tier === "A").length,
+    sTierLongCount: positions.filter(
+      (position) => position.tier === "S" && position.side === "LONG"
+    ).length,
+    sTierShortCount: positions.filter(
+      (position) => position.tier === "S" && position.side === "SHORT"
+    ).length,
   };
 }
 
-function computeV2Scoring(params: {
+function computePass1(params: {
   positions: TraderPosition[];
   metrics: GroupMetrics;
   market: SignalMarketContext | null | undefined;
   recentEvents: PositionChange[];
   now: number;
   coin: string;
-}) {
+}): Pass1Result["v2Draft"] {
   let weightedLongCounts = 0;
   let weightedShortCounts = 0;
   let weightedLongValue = 0;
@@ -230,9 +282,6 @@ function computeV2Scoring(params: {
     market: params.market,
     dominantSide,
   });
-  const conviction = Math.round(
-    Math.max(0, Math.min(100, rawConviction + marketAdjustment.score))
-  );
   const velocity = computeVelocityScore({
     recentEvents: params.recentEvents,
     coin: params.coin,
@@ -257,9 +306,20 @@ function computeV2Scoring(params: {
           : params.metrics.aTierCount >= 3
             ? 10
             : 5;
-  const convictionScore =
-    conviction >= 80 ? 40 : conviction >= 65 ? 30 : conviction >= 50 ? 20 : 10;
-  const velocityScore =
+
+  const provisionalConviction = Math.max(
+    0,
+    Math.min(100, rawConviction + marketAdjustment.score)
+  );
+  const convictionScoreSub =
+    provisionalConviction >= 80
+      ? 40
+      : provisionalConviction >= 65
+        ? 30
+        : provisionalConviction >= 50
+          ? 20
+          : 10;
+  const velocityScoreSub =
     velocity.score >= 80
       ? 20
       : velocity.score >= 60
@@ -270,21 +330,15 @@ function computeV2Scoring(params: {
             ? 5
             : 0;
 
-  const totalScore =
-    scaleScore + tierScore + convictionScore + velocityScore + marketAdjustment.score;
   return {
-    conviction,
     rawConviction,
-    type: mapAlignmentBandToLegacyType(alignmentBand),
-    strength: classifyStrength(totalScore),
-    dominantSide,
     alignmentBand,
-    countAlignment: roundTo(countAlignment),
-    valueAlignment: roundTo(valueAlignment),
-    sTierAlignment: roundTo(sTierAlignment),
-    freshnessWeightedLongs: roundTo(weightedLongCounts),
-    freshnessWeightedShorts: roundTo(weightedShortCounts),
-    effectiveTraders: roundTo(weightedParticipation / 5, 1),
+    countAlignment,
+    valueAlignment,
+    sTierAlignment,
+    freshnessWeightedLongs: weightedLongCounts,
+    freshnessWeightedShorts: weightedShortCounts,
+    effectiveTraders: weightedParticipation / 5,
     marketAdjustment: marketAdjustment.score,
     velocity,
     concentration: {
@@ -297,22 +351,129 @@ function computeV2Scoring(params: {
       ),
       maximum: roundTo(Math.max(0, ...concentrationValues), 4),
       dominantAverage: roundTo(
-        params.positions
-          .filter((position) => position.side === dominantSide)
-          .reduce(
-            (sum, position, _, positions) =>
-              positions.length === 0
-                ? 0
-                : sum +
-                  ((position.accountValue ?? 0) > 0
-                    ? position.marginUsed / ((position.accountValue ?? 0) || 1) / positions.length
-                    : 0),
-            0
-          ),
+        (() => {
+          const dominants = params.positions.filter(
+            (position) => position.side === dominantSide
+          );
+          if (dominants.length === 0) return 0;
+          return (
+            dominants.reduce(
+              (sum, position) =>
+                sum +
+                ((position.accountValue ?? 0) > 0
+                  ? position.marginUsed / (position.accountValue ?? 0)
+                  : 0),
+              0
+            ) / dominants.length
+          );
+        })(),
         4
       ),
     },
-    totalScore: Math.round(totalScore),
+    dominantSide,
+    weightedLongValue,
+    weightedShortValue,
+    scaleScore,
+    tierScore,
+    convictionScoreSub,
+    velocityScoreSub,
+  };
+}
+
+function finalizeV2(params: {
+  pass1: Pass1Result["v2Draft"];
+  metrics: GroupMetrics;
+  baseline: MarketBaseline;
+  smi: SignalSmiState | null;
+}): SignalScoringV2 {
+  const {
+    pass1,
+    metrics,
+    baseline,
+    smi,
+  } = params;
+
+  // Cross-sectional adjustment — subtract market beta from conviction
+  const crossSectional = computeCrossSectionalAdjustment({
+    dominantSide: pass1.dominantSide,
+    baseline,
+  });
+
+  // Final conviction: raw + market regime + cross-sectional beta normalization
+  const conviction = Math.round(
+    Math.max(
+      0,
+      Math.min(
+        100,
+        pass1.rawConviction + pass1.marketAdjustment + crossSectional.score
+      )
+    )
+  );
+
+  // Recompute conviction sub-score after adjustments
+  const adjustedConvictionScore =
+    conviction >= 80 ? 40 : conviction >= 65 ? 30 : conviction >= 50 ? 20 : 10;
+
+  const rawTotalScore =
+    pass1.scaleScore +
+    pass1.tierScore +
+    adjustedConvictionScore +
+    pass1.velocityScoreSub +
+    pass1.marketAdjustment +
+    crossSectional.score;
+
+  const provisionalStrength = classifyStrength(rawTotalScore);
+
+  // Viability floor
+  const viability = applyViabilityFloor({
+    strength: provisionalStrength,
+    totalTraders: metrics.longTraders + metrics.shortTraders,
+    sTierCount: metrics.sTierCount,
+    totalValueUsd: metrics.totalValueUsd,
+  });
+
+  // Trade-trigger composite
+  const tradeTrigger: TradeTriggerBreakdown = computeTradeTriggerScore({
+    v2TotalScore: rawTotalScore,
+    strength: viability.strength,
+    alignmentBand: pass1.alignmentBand,
+    dominantSide: pass1.dominantSide,
+    conviction,
+    velocity: pass1.velocity,
+    crossSectional,
+    viability: viability.summary,
+    smi: smi
+      ? {
+          signal: smi.signal,
+          confirmed: smi.confirmed,
+          confidence: smi.confidence,
+        }
+      : null,
+    marketAdjustment: pass1.marketAdjustment,
+    totalValueUsd: metrics.totalValueUsd,
+    sTierCount: metrics.sTierCount,
+  });
+
+  return {
+    conviction,
+    rawConviction: pass1.rawConviction,
+    type: mapAlignmentBandToLegacyType(pass1.alignmentBand),
+    strength: viability.strength,
+    dominantSide: pass1.dominantSide,
+    alignmentBand: pass1.alignmentBand,
+    countAlignment: roundTo(pass1.countAlignment),
+    valueAlignment: roundTo(pass1.valueAlignment),
+    sTierAlignment: roundTo(pass1.sTierAlignment),
+    freshnessWeightedLongs: roundTo(pass1.freshnessWeightedLongs),
+    freshnessWeightedShorts: roundTo(pass1.freshnessWeightedShorts),
+    effectiveTraders: roundTo(pass1.effectiveTraders, 1),
+    marketAdjustment: pass1.marketAdjustment,
+    velocity: pass1.velocity,
+    concentration: pass1.concentration,
+    crossSectional,
+    viability: viability.summary,
+    tradeTrigger,
+    totalScore: Math.round(rawTotalScore),
   };
 }
 
@@ -322,9 +483,10 @@ export function aggregateSignals(
   options: AggregateSignalsOptions = {}
 ): Signal[] {
   const now = options.now ?? Date.now();
-  const signals: Signal[] = [];
   const coinGroups = toTraderPositions(store, timingRecords);
 
+  // ── PASS 1: per-coin scoring ──────────────────────────────
+  const pass1Results: Pass1Result[] = [];
   for (const [coin, positions] of coinGroups) {
     if (positions.length < 2) continue;
 
@@ -359,7 +521,7 @@ export function aggregateSignals(
       shortValueUsd: metrics.shortValueUsd,
     });
 
-    const v2 = computeV2Scoring({
+    const v2Draft = computePass1({
       positions,
       metrics,
       market: options.marketByCoin?.[coin] ?? null,
@@ -378,9 +540,9 @@ export function aggregateSignals(
     const avgLeverage =
       positions.reduce((sum, position) => sum + position.leverage, 0) / positions.length;
     const dominantPositions =
-      v2.dominantSide === "SPLIT"
+      v2Draft.dominantSide === "SPLIT"
         ? positions
-        : positions.filter((position) => position.side === v2.dominantSide);
+        : positions.filter((position) => position.side === v2Draft.dominantSide);
     const totalDominantSize = dominantPositions.reduce(
       (sum, position) => sum + position.sizeUsd,
       0
@@ -398,35 +560,80 @@ export function aggregateSignals(
       0
     );
 
-    positions.sort((left, right) => {
+    pass1Results.push({
+      coin,
+      positions,
+      metrics,
+      legacy,
+      v2Draft,
+      smi,
+      avgLeverage,
+      avgEntryPx,
+      totalPnl,
+    });
+  }
+
+  // ── Compute market baseline for cross-sectional normalization ────
+  const baseline = computeMarketBaseline(
+    pass1Results.map((result) => ({
+      coin: result.coin,
+      dominantSide: result.v2Draft.dominantSide,
+      sTierCount: result.metrics.sTierCount,
+      sTierDominantCount:
+        result.v2Draft.dominantSide === "LONG"
+          ? result.metrics.sTierLongCount
+          : result.v2Draft.dominantSide === "SHORT"
+            ? result.metrics.sTierShortCount
+            : 0,
+      totalValueUsd: result.metrics.totalValueUsd,
+      dominantValueUsd:
+        result.v2Draft.dominantSide === "LONG"
+          ? result.metrics.longValueUsd
+          : result.v2Draft.dominantSide === "SHORT"
+            ? result.metrics.shortValueUsd
+            : 0,
+    }))
+  );
+
+  // ── PASS 2: finalize with cross-sectional + viability + trade trigger ────
+  const signals: Signal[] = [];
+  for (const result of pass1Results) {
+    const v2 = finalizeV2({
+      pass1: result.v2Draft,
+      metrics: result.metrics,
+      baseline,
+      smi: result.smi,
+    });
+
+    result.positions.sort((left, right) => {
       const tierDiff = TIER_WEIGHT[right.tier] - TIER_WEIGHT[left.tier];
       if (tierDiff !== 0) return tierDiff;
       return right.sizeUsd - left.sizeUsd;
     });
 
     signals.push({
-      coin,
+      coin: result.coin,
       type: v2.type,
       strength: v2.strength,
       dominantSide: v2.dominantSide,
       conviction: v2.conviction,
-      totalTraders: positions.length,
-      longTraders: metrics.longTraders,
-      shortTraders: metrics.shortTraders,
-      totalValueUsd: metrics.totalValueUsd,
-      longValueUsd: metrics.longValueUsd,
-      shortValueUsd: metrics.shortValueUsd,
-      avgLeverage: roundTo(avgLeverage, 1),
-      avgEntryPx,
-      totalUnrealizedPnl: totalPnl,
-      sTierCount: metrics.sTierCount,
-      aTierCount: metrics.aTierCount,
-      positions,
+      totalTraders: result.positions.length,
+      longTraders: result.metrics.longTraders,
+      shortTraders: result.metrics.shortTraders,
+      totalValueUsd: result.metrics.totalValueUsd,
+      longValueUsd: result.metrics.longValueUsd,
+      shortValueUsd: result.metrics.shortValueUsd,
+      avgLeverage: roundTo(result.avgLeverage, 1),
+      avgEntryPx: result.avgEntryPx,
+      totalUnrealizedPnl: result.totalPnl,
+      sTierCount: result.metrics.sTierCount,
+      aTierCount: result.metrics.aTierCount,
+      positions: result.positions,
       scoring: {
-        legacy,
+        legacy: result.legacy,
         v2,
       },
-      smi,
+      smi: result.smi,
       timestamp: now,
     });
   }
@@ -435,6 +642,11 @@ export function aggregateSignals(
     const strengthOrder = { strong: 3, moderate: 2, weak: 1 };
     const strengthDiff = strengthOrder[right.strength] - strengthOrder[left.strength];
     if (strengthDiff !== 0) return strengthDiff;
+
+    // Primary sort: trade trigger score
+    const leftTrig = left.scoring?.v2.tradeTrigger.score ?? 0;
+    const rightTrig = right.scoring?.v2.tradeTrigger.score ?? 0;
+    if (rightTrig !== leftTrig) return rightTrig - leftTrig;
 
     const leftScore =
       left.conviction +

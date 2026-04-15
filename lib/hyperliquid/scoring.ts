@@ -106,12 +106,13 @@ export function scoreFromLeaderboard(candidate: TraderCandidate): TraderScore {
     activity * 0.15 +
     scale * 0.15;
 
-  // Tier
+  // Tier — tightened to curb inflation.
+  // Target distribution: ~10% S, ~20% A, ~30% B, rest C/D.
   const tier =
-    totalScore >= 80 ? "S" :
-    totalScore >= 65 ? "A" :
-    totalScore >= 50 ? "B" :
-    totalScore >= 35 ? "C" : "D";
+    totalScore >= 87 ? "S" :
+    totalScore >= 72 ? "A" :
+    totalScore >= 55 ? "B" :
+    totalScore >= 38 ? "C" : "D";
 
   return {
     address: candidate.address,
@@ -175,10 +176,10 @@ export function scoreFromAnalysis(
   ) / 10;
 
   base.tier =
-    base.totalScore >= 80 ? "S" :
-    base.totalScore >= 65 ? "A" :
-    base.totalScore >= 50 ? "B" :
-    base.totalScore >= 35 ? "C" : "D";
+    base.totalScore >= 87 ? "S" :
+    base.totalScore >= 72 ? "A" :
+    base.totalScore >= 55 ? "B" :
+    base.totalScore >= 38 ? "C" : "D";
 
   return base;
 }

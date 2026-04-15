@@ -37,6 +37,8 @@ export const KEYS = {
   POSITION_EVENTS_RECENT: "positions:events:recent",
   NOTIFY_LAST_STATE: "notify:last-state",
   NOTIFY_COOLDOWNS: "notify:cooldowns",
+  NOTIFY_SIDE_STREAKS: "notify:side-streaks",
+  NOTIFY_DAILY_STATS: "notify:daily-stats",
   SMI_ALL_LATEST: "smi:all:latest",
   SIGNAL_OUTCOMES_PENDING: "signals:outcomes:pending",
   SIGNAL_OUTCOMES_STATS: "signals:outcomes:stats",

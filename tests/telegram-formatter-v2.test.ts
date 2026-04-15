@@ -4,26 +4,27 @@ import assert from "node:assert/strict";
 import { formatAlert } from "@/lib/telegram/formatter";
 import type { AlertEvent } from "@/lib/telegram/detector";
 
-test("formatAlert includes alignment band, velocity, and SMI context", () => {
-  const event = {
+test("formatAlert includes alignment band, velocity, trade trigger, and SMI", () => {
+  const event: AlertEvent = {
     type: "stier_surge",
     detail: "S-tier +2명 진입 (1→3)",
     priority: 1,
+    triggerScore: 82,
     signal: {
       coin: "BTC",
-      type: "emerging",
+      type: "consensus",
       strength: "strong",
       dominantSide: "LONG",
-      conviction: 78,
-      totalTraders: 4,
-      longTraders: 3,
+      conviction: 88,
+      totalTraders: 7,
+      longTraders: 6,
       shortTraders: 1,
-      totalValueUsd: 1_250_000,
-      longValueUsd: 1_000_000,
+      totalValueUsd: 5_250_000,
+      longValueUsd: 5_000_000,
       shortValueUsd: 250_000,
       avgLeverage: 7.5,
       avgEntryPx: 68_000,
-      totalUnrealizedPnl: 25_000,
+      totalUnrealizedPnl: 125_000,
       sTierCount: 3,
       aTierCount: 1,
       positions: [],
@@ -42,29 +43,29 @@ test("formatAlert includes alignment band, velocity, and SMI context", () => {
       narrative: "",
       scoring: {
         legacy: {
-          conviction: 71,
-          type: "emerging",
-          strength: "moderate",
-          dominantSide: "LONG",
-          countAlignment: 0.67,
-          valueAlignment: 0.8,
-          sTierAlignment: 0.6,
-          totalScore: 60,
-        },
-        v2: {
-          conviction: 78,
-          rawConviction: 72,
-          type: "emerging",
+          conviction: 82,
+          type: "consensus",
           strength: "strong",
           dominantSide: "LONG",
-          alignmentBand: "near_consensus",
-          countAlignment: 0.66,
-          valueAlignment: 0.8,
-          sTierAlignment: 0.74,
-          freshnessWeightedLongs: 7.2,
-          freshnessWeightedShorts: 3.1,
-          effectiveTraders: 2.8,
-          marketAdjustment: 6,
+          countAlignment: 0.86,
+          valueAlignment: 0.9,
+          sTierAlignment: 0.8,
+          totalScore: 88,
+        },
+        v2: {
+          conviction: 88,
+          rawConviction: 82,
+          type: "consensus",
+          strength: "strong",
+          dominantSide: "LONG",
+          alignmentBand: "consensus",
+          countAlignment: 0.86,
+          valueAlignment: 0.9,
+          sTierAlignment: 0.83,
+          freshnessWeightedLongs: 8.4,
+          freshnessWeightedShorts: 1.1,
+          effectiveTraders: 8.8,
+          marketAdjustment: 4,
           velocity: {
             dominantSide: "LONG",
             score: 82,
@@ -78,7 +79,29 @@ test("formatAlert includes alignment band, velocity, and SMI context", () => {
             maximum: 0.3,
             dominantAverage: 0.18,
           },
-          totalScore: 86,
+          crossSectional: {
+            marketTilt: -0.12,
+            coinTilt: 1,
+            score: 2,
+            idiosyncraticAlpha: 88,
+          },
+          viability: {
+            downgraded: false,
+            reason: null,
+            scaleFloor: false,
+            traderFloor: false,
+            sTierFloor: false,
+          },
+          tradeTrigger: {
+            score: 82,
+            coreQuality: 34,
+            idiosyncraticAlpha: 18,
+            smiAlignment: 25,
+            velocity: 12,
+            viabilityPenalty: 0,
+            gate: "pass",
+          },
+          totalScore: 104,
         },
       },
       smi: {
@@ -93,15 +116,16 @@ test("formatAlert includes alignment band, velocity, and SMI context", () => {
         confidence: "medium",
         persistenceCount: 2,
         effectiveParticipation: 9.5,
-        traderCount: 4,
+        traderCount: 7,
         timestamp: 1_710_000_000_000,
       },
     },
-  } satisfies AlertEvent as AlertEvent & { signal: AlertEvent["signal"] & Record<string, unknown> };
+  };
 
   const text = formatAlert(event);
-
-  assert.match(text, /near_consensus/i);
+  assert.match(text, /consensus/i);
   assert.match(text, /Velocity 82/);
   assert.match(text, /SMI 64/);
+  assert.match(text, /Idio α/);
+  assert.match(text, /Trigger 82\/100/);
 });

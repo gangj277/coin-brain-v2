@@ -75,8 +75,12 @@ function buildBody(signal: ServedSignal): string {
   lines.push(`평균 레버리지: ${signal.avgLeverage}x | 진입가: ${fmtPrice(signal.avgEntryPx)}`);
 
   if (signal.scoring?.v2) {
+    const v2 = signal.scoring.v2;
     lines.push(
-      `정렬: ${signal.scoring.v2.alignmentBand} | Velocity ${signal.scoring.v2.velocity.score} | Market Adj ${signal.scoring.v2.marketAdjustment >= 0 ? "+" : ""}${signal.scoring.v2.marketAdjustment}`
+      `정렬: ${v2.alignmentBand} | Velocity ${v2.velocity.score} | Market Adj ${v2.marketAdjustment >= 0 ? "+" : ""}${v2.marketAdjustment}`
+    );
+    lines.push(
+      `Idio α: ${v2.crossSectional.idiosyncraticAlpha} (market tilt ${v2.crossSectional.marketTilt >= 0 ? "+" : ""}${v2.crossSectional.marketTilt}) | Trigger ${v2.tradeTrigger.score}/100`
     );
   }
   if (signal.smi) {

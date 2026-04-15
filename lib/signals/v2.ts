@@ -55,6 +55,38 @@ export interface ConcentrationSummary {
   dominantAverage: number;
 }
 
+export interface CrossSectionalAdjustmentSummary {
+  /** market-wide directional tilt (-1 bearish … 1 bullish) */
+  marketTilt: number;
+  /** this coin's tilt on same scale */
+  coinTilt: number;
+  /** points added/subtracted to conviction based on idiosyncratic alpha */
+  score: number;
+  /** idiosyncratic alpha magnitude 0-100 — higher = more unique vs. market */
+  idiosyncraticAlpha: number;
+}
+
+export interface ViabilityAdjustmentSummary {
+  /** strength downgraded due to scale / trader-count / s-tier viability */
+  downgraded: boolean;
+  reason: string | null;
+  scaleFloor: boolean;
+  traderFloor: boolean;
+  sTierFloor: boolean;
+}
+
+export interface TradeTriggerBreakdown {
+  /** 0-100 composite — single source of truth for alert-worthiness */
+  score: number;
+  /** individual subcomponents for telemetry */
+  coreQuality: number;
+  idiosyncraticAlpha: number;
+  smiAlignment: number;
+  velocity: number;
+  viabilityPenalty: number;
+  gate: "pass" | "fail";
+}
+
 export interface SignalScoringLegacy {
   conviction: number;
   type: SignalType;
@@ -82,6 +114,9 @@ export interface SignalScoringV2 {
   marketAdjustment: number;
   velocity: VelocitySummary;
   concentration: ConcentrationSummary;
+  crossSectional: CrossSectionalAdjustmentSummary;
+  viability: ViabilityAdjustmentSummary;
+  tradeTrigger: TradeTriggerBreakdown;
   totalScore: number;
 }
 
@@ -114,6 +149,18 @@ const EVENT_WEIGHT = {
   position_increased: 0.6,
   position_flipped: 1.5,
 } as const;
+
+// ── Viability hard floors ───────────────────────────────────
+// Signals below these can never be "strong" — filters statistical artifacts.
+export const VIABILITY = {
+  MIN_TOTAL_VALUE_FOR_STRONG: 1_000_000,
+  MIN_TOTAL_VALUE_FOR_MODERATE: 200_000,
+  MIN_TRADERS_FOR_STRONG: 5,
+  MIN_S_TIER_FOR_STRONG: 2,
+} as const;
+
+// ── Trade trigger gate ──────────────────────────────────────
+export const TRADE_TRIGGER_GATE = 75;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -180,9 +227,14 @@ export function computeDominantSide(
   return longScore >= shortScore ? "LONG" : "SHORT";
 }
 
+/**
+ * Tightened strength thresholds.
+ * Total score range with v2 factors: ~5-130.
+ * Only top signals (bulk score + S-tier + conviction + velocity) qualify as strong.
+ */
 export function classifyStrength(totalScore: number): SignalStrength {
-  if (totalScore >= 75) return "strong";
-  if (totalScore >= 50) return "moderate";
+  if (totalScore >= 95) return "strong";
+  if (totalScore >= 70) return "moderate";
   return "weak";
 }
 
@@ -244,7 +296,7 @@ export function buildLegacyScore(params: {
   return {
     conviction,
     type,
-    strength: classifyStrength(totalScore),
+    strength: totalScore >= 75 ? "strong" : totalScore >= 50 ? "moderate" : "weak",
     dominantSide,
     countAlignment: roundTo(params.countAlignment),
     valueAlignment: roundTo(params.valueAlignment),
@@ -397,4 +449,243 @@ export function computeScaleBonus(valueUsd: number) {
   if (valueUsd >= 1_000_000) return 20;
   if (valueUsd >= 100_000) return 10;
   return 0;
+}
+
+// ─── NEW: Cross-sectional market beta normalization ──────────
+
+export interface CrossSectionalInput {
+  coin: string;
+  dominantSide: "LONG" | "SHORT" | "SPLIT";
+  sTierCount: number;
+  /** sum of sTier counts on dominant side */
+  sTierDominantCount: number;
+  totalValueUsd: number;
+  dominantValueUsd: number;
+}
+
+export interface MarketBaseline {
+  marketTilt: number;
+  totalSignals: number;
+  longCount: number;
+  shortCount: number;
+}
+
+export function computeMarketBaseline(
+  signals: CrossSectionalInput[]
+): MarketBaseline {
+  const directional = signals.filter((s) => s.dominantSide !== "SPLIT");
+  if (directional.length === 0) {
+    return { marketTilt: 0, totalSignals: 0, longCount: 0, shortCount: 0 };
+  }
+  // Weight by sTier presence — market mode is what S-tiers as a whole are doing
+  let longWeight = 0;
+  let shortWeight = 0;
+  for (const s of directional) {
+    const w = 1 + s.sTierCount * 0.5;
+    if (s.dominantSide === "LONG") longWeight += w;
+    else shortWeight += w;
+  }
+  const total = longWeight + shortWeight;
+  const tilt = total > 0 ? (longWeight - shortWeight) / total : 0;
+  return {
+    marketTilt: roundTo(tilt, 3),
+    totalSignals: directional.length,
+    longCount: directional.filter((s) => s.dominantSide === "LONG").length,
+    shortCount: directional.filter((s) => s.dominantSide === "SHORT").length,
+  };
+}
+
+/**
+ * If the market is 70% short-tilted and this coin is also short, subtract beta.
+ * If this coin is LONG against a SHORT market, add contrarian alpha.
+ */
+export function computeCrossSectionalAdjustment(params: {
+  dominantSide: "LONG" | "SHORT" | "SPLIT";
+  baseline: MarketBaseline;
+}): CrossSectionalAdjustmentSummary {
+  if (params.dominantSide === "SPLIT" || params.baseline.totalSignals === 0) {
+    return { marketTilt: params.baseline.marketTilt, coinTilt: 0, score: 0, idiosyncraticAlpha: 0 };
+  }
+  const coinTilt = params.dominantSide === "LONG" ? 1 : -1;
+  // Projection onto market tilt: +1 = fully aligned with market beta, -1 = fully against
+  const beta = coinTilt * params.baseline.marketTilt;
+  // Idiosyncratic component = 1 - |beta alignment|, scaled 0-100
+  const idiosyncratic = roundTo(
+    clamp((1 - Math.abs(beta)) * 100, 0, 100),
+    1
+  );
+  // Penalty if aligned with beta (market-beta noise), bonus if contrarian
+  // ±20 points max adjustment
+  const score = roundTo(-beta * 20, 1);
+  return {
+    marketTilt: params.baseline.marketTilt,
+    coinTilt,
+    score,
+    idiosyncraticAlpha: idiosyncratic,
+  };
+}
+
+// ─── NEW: Viability floor ────────────────────────────────────
+
+export function applyViabilityFloor(params: {
+  strength: SignalStrength;
+  totalTraders: number;
+  sTierCount: number;
+  totalValueUsd: number;
+}): { strength: SignalStrength; summary: ViabilityAdjustmentSummary } {
+  const reasons: string[] = [];
+
+  // Flag every floor condition regardless of incoming strength so telemetry is accurate.
+  const scaleFloorStrong =
+    params.totalValueUsd < VIABILITY.MIN_TOTAL_VALUE_FOR_STRONG;
+  const scaleFloorModerate =
+    params.totalValueUsd < VIABILITY.MIN_TOTAL_VALUE_FOR_MODERATE;
+  const traderFloor =
+    params.totalTraders < VIABILITY.MIN_TRADERS_FOR_STRONG;
+  const sTierFloor =
+    params.sTierCount < VIABILITY.MIN_S_TIER_FOR_STRONG;
+
+  let strength = params.strength;
+
+  if (scaleFloorStrong && strength === "strong") {
+    strength = "moderate";
+    reasons.push(`scale<$1M`);
+  }
+  if (scaleFloorModerate && strength !== "weak") {
+    strength = "weak";
+    reasons.push(`scale<$200k`);
+  }
+  if (traderFloor && strength === "strong") {
+    strength = "moderate";
+    reasons.push(`traders<${VIABILITY.MIN_TRADERS_FOR_STRONG}`);
+  }
+  if (sTierFloor && strength === "strong") {
+    strength = "moderate";
+    reasons.push(`sTier<${VIABILITY.MIN_S_TIER_FOR_STRONG}`);
+  }
+
+  return {
+    strength,
+    summary: {
+      downgraded: strength !== params.strength,
+      reason: reasons.length > 0 ? reasons.join(", ") : null,
+      scaleFloor: scaleFloorStrong || scaleFloorModerate,
+      traderFloor,
+      sTierFloor,
+    },
+  };
+}
+
+// ─── NEW: Trade-trigger composite ────────────────────────────
+
+export interface TradeTriggerInput {
+  v2TotalScore: number;
+  strength: SignalStrength;
+  alignmentBand: AlignmentBand;
+  dominantSide: "LONG" | "SHORT" | "SPLIT";
+  conviction: number;
+  velocity: VelocitySummary;
+  crossSectional: CrossSectionalAdjustmentSummary;
+  viability: ViabilityAdjustmentSummary;
+  smi: {
+    signal: string;
+    confirmed: boolean;
+    confidence: "high" | "medium" | "low";
+  } | null;
+  marketAdjustment: number;
+  totalValueUsd: number;
+  sTierCount: number;
+}
+
+/**
+ * Single 0-100 composite that is the sole gate for Telegram alerts.
+ * Keeps signal surface to a small, high-conviction subset.
+ */
+export function computeTradeTriggerScore(
+  input: TradeTriggerInput
+): TradeTriggerBreakdown {
+  // Instant fails — sub-viability signals cannot be triggers
+  if (input.dominantSide === "SPLIT") {
+    return {
+      score: 0,
+      coreQuality: 0,
+      idiosyncraticAlpha: 0,
+      smiAlignment: 0,
+      velocity: 0,
+      viabilityPenalty: 0,
+      gate: "fail",
+    };
+  }
+  if (input.strength === "weak") {
+    return {
+      score: 0,
+      coreQuality: 0,
+      idiosyncraticAlpha: 0,
+      smiAlignment: 0,
+      velocity: 0,
+      viabilityPenalty: 0,
+      gate: "fail",
+    };
+  }
+
+  // Core quality: scaled v2 totalScore. Max 130 → max 40 pts.
+  const coreQuality = clamp((input.v2TotalScore / 130) * 40, 0, 40);
+
+  // Idiosyncratic alpha: 0-100 → 0-20 pts. Rewards signals that differ from market beta.
+  const idioAlpha = clamp(
+    (input.crossSectional.idiosyncraticAlpha / 100) * 20,
+    0,
+    20
+  );
+
+  // SMI alignment: up to 25. -10 if SMI confirmed in OPPOSITE direction.
+  let smiAlignment = 0;
+  if (input.smi) {
+    const smiDir =
+      input.smi.signal === "LONG" || input.smi.signal === "STRONG_LONG"
+        ? "LONG"
+        : input.smi.signal === "SHORT" || input.smi.signal === "STRONG_SHORT"
+          ? "SHORT"
+          : null;
+    if (smiDir && smiDir === input.dominantSide) {
+      smiAlignment = input.smi.confirmed ? 25 : 8;
+      if (input.smi.confidence === "high") smiAlignment += 3;
+      else if (input.smi.confidence === "medium") smiAlignment += 1;
+    } else if (smiDir && smiDir !== input.dominantSide && input.smi.confirmed) {
+      smiAlignment = -10;
+    }
+  }
+
+  // Velocity: 0-100 score → 0-15 pts. Requires fresh entries.
+  const velocity = clamp((input.velocity.score / 100) * 15, 0, 15);
+
+  // Viability penalty
+  const viabilityPenalty = input.viability.downgraded ? -10 : 0;
+
+  // Raw total
+  let score =
+    coreQuality + idioAlpha + smiAlignment + velocity + viabilityPenalty;
+
+  // S-tier magnitude bonus: real elite confirmation
+  if (input.sTierCount >= 5) score += 5;
+  else if (input.sTierCount >= 3) score += 2;
+
+  // Scale bonus for whale-class positions
+  if (input.totalValueUsd >= 10_000_000) score += 3;
+  else if (input.totalValueUsd >= 3_000_000) score += 1.5;
+
+  // Market adjustment clash: if we're ignoring heavy crowding, penalize
+  if (input.marketAdjustment <= -8) score -= 5;
+
+  score = clamp(score, 0, 100);
+
+  return {
+    score: roundTo(score, 1),
+    coreQuality: roundTo(coreQuality, 1),
+    idiosyncraticAlpha: roundTo(idioAlpha, 1),
+    smiAlignment: roundTo(smiAlignment, 1),
+    velocity: roundTo(velocity, 1),
+    viabilityPenalty,
+    gate: score >= TRADE_TRIGGER_GATE ? "pass" : "fail",
+  };
 }

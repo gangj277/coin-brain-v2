@@ -1,12 +1,10 @@
 /**
- * Signal Event Detector — diffs snapshots to find alert-worthy changes.
+ * Signal Event Detector — diffs snapshots, enforces trade-trigger gate, daily cap,
+ * side-flip stability, and per-coin:event cooldowns.
  *
- * Compares current vs previous served snapshot and emits events:
- *   - new_signal:      Coin appears with 3+ traders for the first time
- *   - stier_surge:     S-tier count increased by 2+ on a coin
- *   - strength_upgrade: Signal strength increased (weak→moderate→strong)
- *   - consensus_formed: Signal type changed to "consensus"
- *   - side_flip:       Dominant side flipped (LONG→SHORT or vice versa)
+ * Single-gate model: the v2 scoring pipeline attaches `tradeTrigger.gate` to each signal.
+ * The detector only surfaces events for signals that have passed that gate, plus a few
+ * event-specific structural requirements.
  */
 
 import type { ServedSignal, ServedSignalSnapshot } from "@/lib/pipeline/types";
@@ -23,25 +21,23 @@ export type AlertEventType =
 export interface AlertEvent {
   type: AlertEventType;
   signal: ServedSignal;
-  /** What changed — human-readable context for the formatter */
   detail: string;
-  /** Priority 1 (highest) to 3 (lowest) */
   priority: 1 | 2 | 3;
+  triggerScore: number;
 }
 
 // ─── Cooldown State ─────────────────────────────────────
 
 export interface CooldownState {
-  /** `${coin}:${eventType}` → timestamp of last alert sent */
   [key: string]: number;
 }
 
 const COOLDOWN_MS: Record<AlertEventType, number> = {
-  new_signal: 30 * 60 * 1000,
-  stier_surge: 20 * 60 * 1000,
-  strength_upgrade: 30 * 60 * 1000,
-  consensus_formed: 60 * 60 * 1000,
-  side_flip: 15 * 60 * 1000,
+  new_signal: 45 * 60 * 1000,
+  stier_surge: 30 * 60 * 1000,
+  strength_upgrade: 45 * 60 * 1000,
+  consensus_formed: 90 * 60 * 1000,
+  side_flip: 60 * 60 * 1000,
 };
 
 function getCooldownKey(coin: string, type: AlertEventType) {
@@ -59,254 +55,225 @@ function isOnCooldown(
   return now - lastSent < COOLDOWN_MS[type];
 }
 
-// ─── Strength Ordering ──────────────────────────────────
+// ─── Side Streak Tracking ───────────────────────────────
 
-const STRENGTH_RANK = { weak: 0, moderate: 1, strong: 2 } as const;
-const EVENT_QUALITY_FLOOR: Record<AlertEventType, number> = {
-  new_signal: 7,
-  stier_surge: 6.5,
-  strength_upgrade: 7,
-  consensus_formed: 7,
-  side_flip: 8,
-};
-
-function getAlignmentBand(signal: ServedSignal) {
-  if (signal.scoring?.v2.alignmentBand) {
-    return signal.scoring.v2.alignmentBand;
-  }
-  if (signal.type === "consensus") return "consensus";
-  if (signal.type === "divergence") return "divergence";
-  return "near_consensus";
+export interface SideStreakEntry {
+  side: "LONG" | "SHORT" | "SPLIT";
+  count: number;
+  updatedAt: number;
 }
 
-function getEffectiveTraders(signal: ServedSignal) {
-  return signal.scoring?.v2.effectiveTraders ?? signal.totalTraders;
-}
+export type SideStreakState = Record<string, SideStreakEntry>;
 
-function getVelocityScore(signal: ServedSignal) {
-  return signal.scoring?.v2.velocity.score ?? 0;
-}
+const SIDE_FLIP_REQUIRED_STREAK = 3;
 
-function getMarketAdjustment(signal: ServedSignal) {
-  return signal.scoring?.v2.marketAdjustment ?? 0;
-}
-
-function getSmiDirection(signal: ServedSignal): "LONG" | "SHORT" | null {
-  const smiSignal = signal.smi?.signal;
-  if (smiSignal === "LONG" || smiSignal === "STRONG_LONG") return "LONG";
-  if (smiSignal === "SHORT" || smiSignal === "STRONG_SHORT") return "SHORT";
-  return null;
-}
-
-function isMeaningfulAlertSignal(
-  signal: ServedSignal,
-  eventType: AlertEventType
-) {
-  if (signal.strength === "weak" || signal.totalTraders < 3) {
-    return false;
-  }
-
-  const alignmentBand = getAlignmentBand(signal);
-  if (alignmentBand === "divergence" || alignmentBand === "counter_consensus") {
-    return false;
-  }
-
-  const velocity = getVelocityScore(signal);
-  const effectiveTraders = getEffectiveTraders(signal);
-  const marketAdjustment = getMarketAdjustment(signal);
-  const smiDirection = getSmiDirection(signal);
-  const alignedDirectionalSmi =
-    smiDirection !== null && smiDirection === signal.dominantSide;
-  const alignedConfirmedSmi =
-    alignedDirectionalSmi && Boolean(signal.smi?.confirmed);
-  const conflictingConfirmedSmi =
-    Boolean(signal.smi?.confirmed) &&
-    smiDirection !== null &&
-    smiDirection !== signal.dominantSide;
-
-  if (conflictingConfirmedSmi) {
-    return false;
-  }
-
-  if (marketAdjustment <= -10 && !alignedConfirmedSmi) {
-    return false;
-  }
-
-  if (eventType === "new_signal") {
-    const structuralEntry =
-      signal.totalTraders >= 4 ||
-      signal.sTierCount >= 2 ||
-      alignedConfirmedSmi;
-    if (!structuralEntry) {
-      return false;
+export function updateSideStreaks(
+  prev: SideStreakState,
+  snapshot: ServedSignalSnapshot,
+  now: number
+): SideStreakState {
+  const next: SideStreakState = {};
+  for (const signal of snapshot.signals) {
+    const prevEntry = prev[signal.coin];
+    if (prevEntry && prevEntry.side === signal.dominantSide) {
+      next[signal.coin] = {
+        side: signal.dominantSide,
+        count: prevEntry.count + 1,
+        updatedAt: now,
+      };
+    } else {
+      next[signal.coin] = {
+        side: signal.dominantSide,
+        count: 1,
+        updatedAt: now,
+      };
     }
   }
-
-  if (signal.strength === "moderate" && !alignedConfirmedSmi) {
-    const moderateMomentumCase =
-      signal.sTierCount >= 2 &&
-      effectiveTraders >= 6 &&
-      velocity >= 70 &&
-      marketAdjustment >= 0;
-    if (!moderateMomentumCase) {
-      return false;
+  // Prune stale entries (>12h)
+  const cutoff = now - 12 * 60 * 60 * 1000;
+  for (const [coin, entry] of Object.entries(prev)) {
+    if (!next[coin] && entry.updatedAt >= cutoff) {
+      next[coin] = entry;
     }
   }
+  return next;
+}
 
-  if (eventType === "side_flip") {
-    if (
-      signal.strength !== "strong" ||
-      !alignedConfirmedSmi ||
-      velocity < 55 ||
-      marketAdjustment <= -8
-    ) {
-      return false;
-    }
+// ─── Daily Cap Tracking ─────────────────────────────────
+
+export interface DailyAlertStats {
+  bucketUtcDay: string; // YYYY-MM-DD
+  totalSent: number;
+  perCoin: Record<string, number>;
+}
+
+const DAILY_GLOBAL_CAP = 5;
+const DAILY_PER_COIN_CAP = 2;
+
+export function utcDayKey(now: number): string {
+  const d = new Date(now);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export function ensureDailyBucket(
+  stats: DailyAlertStats | null | undefined,
+  now: number
+): DailyAlertStats {
+  const today = utcDayKey(now);
+  if (!stats || stats.bucketUtcDay !== today) {
+    return { bucketUtcDay: today, totalSent: 0, perCoin: {} };
   }
+  return stats;
+}
 
-  let qualityScore = 0;
+export function canEmitUnderDailyCap(
+  stats: DailyAlertStats,
+  coin: string
+): boolean {
+  if (stats.totalSent >= DAILY_GLOBAL_CAP) return false;
+  if ((stats.perCoin[coin] ?? 0) >= DAILY_PER_COIN_CAP) return false;
+  return true;
+}
 
-  qualityScore += signal.strength === "strong" ? 4 : 1;
-  qualityScore += alignmentBand === "consensus" ? 3 : 2;
+export function incrementDailyCount(
+  stats: DailyAlertStats,
+  coin: string
+): DailyAlertStats {
+  return {
+    bucketUtcDay: stats.bucketUtcDay,
+    totalSent: stats.totalSent + 1,
+    perCoin: {
+      ...stats.perCoin,
+      [coin]: (stats.perCoin[coin] ?? 0) + 1,
+    },
+  };
+}
 
-  if (signal.sTierCount >= 3) {
-    qualityScore += 2;
-  } else if (signal.sTierCount >= 2) {
-    qualityScore += 1;
-  }
+// ─── Trade Trigger Gate ─────────────────────────────────
 
-  if (signal.totalTraders >= 5) {
-    qualityScore += 1;
-  }
+function getTradeTrigger(signal: ServedSignal) {
+  return signal.scoring?.v2.tradeTrigger ?? null;
+}
 
-  if (effectiveTraders >= 8) {
-    qualityScore += 2;
-  } else if (effectiveTraders >= 5) {
-    qualityScore += 1;
-  }
-
-  if (signal.conviction >= 85) {
-    qualityScore += 2;
-  } else if (signal.conviction >= 75) {
-    qualityScore += 1;
-  }
-
-  if (velocity >= 75) {
-    qualityScore += 2;
-  } else if (velocity >= 55) {
-    qualityScore += 1;
-  }
-
-  if (marketAdjustment >= 8) {
-    qualityScore += 1.5;
-  } else if (marketAdjustment > 0) {
-    qualityScore += 0.5;
-  } else if (marketAdjustment <= -8) {
-    qualityScore -= 2;
-  } else if (marketAdjustment <= -4) {
-    qualityScore -= 1;
-  }
-
-  if (alignedConfirmedSmi) {
-    qualityScore += 3;
-  } else if (alignedDirectionalSmi) {
-    qualityScore += 1;
-  }
-
-  if (signal.smi?.confidence === "high") {
-    qualityScore += 1;
-  } else if (signal.smi?.confidence === "medium") {
-    qualityScore += 0.5;
-  }
-
-  if (eventType === "stier_surge") {
-    qualityScore += 1;
-  }
-  if (eventType === "consensus_formed") {
-    qualityScore += 1;
-  }
-
-  return qualityScore >= EVENT_QUALITY_FLOOR[eventType];
+/**
+ * The single gate that determines whether a signal deserves a Telegram alert.
+ *
+ *  - must have v2 scoring (no legacy fallback — forces fresh code path)
+ *  - tradeTrigger.gate must be "pass"
+ *  - dominantSide must be directional (not SPLIT)
+ *  - strength must not be "weak" (viability floor kills tiny/thin signals)
+ */
+function isTradeTriggerPassing(signal: ServedSignal): boolean {
+  const trigger = getTradeTrigger(signal);
+  if (!trigger) return false;
+  if (trigger.gate !== "pass") return false;
+  if (signal.dominantSide === "SPLIT") return false;
+  if (signal.strength === "weak") return false;
+  return true;
 }
 
 // ─── Detector ───────────────────────────────────────────
 
+export interface DetectOptions {
+  sideStreaks?: SideStreakState;
+  dailyStats?: DailyAlertStats | null;
+  cooldowns?: CooldownState;
+  now?: number;
+}
+
 export function detectEvents(
   current: ServedSignalSnapshot,
   previous: ServedSignalSnapshot | null,
-  cooldowns: CooldownState = {},
-  now = Date.now()
+  options: DetectOptions = {}
 ): AlertEvent[] {
+  const now = options.now ?? Date.now();
+  const cooldowns = options.cooldowns ?? {};
+  const sideStreaks = options.sideStreaks ?? {};
+  const dailyBucket = ensureDailyBucket(options.dailyStats ?? null, now);
+
+  // Short-circuit if global cap already hit
+  if (dailyBucket.totalSent >= DAILY_GLOBAL_CAP) return [];
+
   const events: AlertEvent[] = [];
 
-  // Build lookup of previous signals by coin
   const prevByCoin = new Map<string, ServedSignal>();
   if (previous) {
-    for (const sig of previous.signals) {
-      prevByCoin.set(sig.coin, sig);
-    }
+    for (const sig of previous.signals) prevByCoin.set(sig.coin, sig);
   }
 
   for (const signal of current.signals) {
-    // Skip weak signals entirely
-    if (signal.strength === "weak") continue;
+    if (!isTradeTriggerPassing(signal)) continue;
+
+    // Skip if per-coin daily cap reached
+    if (!canEmitUnderDailyCap(dailyBucket, signal.coin)) continue;
 
     const prev = prevByCoin.get(signal.coin);
+    const trigger = getTradeTrigger(signal)!;
 
-    // ── New signal: not in previous snapshot ──
-    if (
-      !prev &&
-      isMeaningfulAlertSignal(signal, "new_signal") &&
-      signal.totalTraders >= 3 &&
-      !isOnCooldown(signal.coin, "new_signal", cooldowns, now)
-    ) {
-      events.push({
-        type: "new_signal",
-        signal,
-        detail: `${signal.coin} 신규 등장 — ${signal.totalTraders}명 트레이더, S-tier ${signal.sTierCount}명`,
-        priority: signal.sTierCount >= 2 ? 1 : 2,
-      });
-      continue; // don't double-alert a new signal
+    // ── new_signal: previously absent OR was weak/SPLIT ──
+    const wasPresent = prev && prev.strength !== "weak" && prev.dominantSide !== "SPLIT";
+    if (!wasPresent) {
+      if (
+        signal.totalTraders >= 4 &&
+        signal.sTierCount >= 2 &&
+        !isOnCooldown(signal.coin, "new_signal", cooldowns, now)
+      ) {
+        events.push({
+          type: "new_signal",
+          signal,
+          detail: `${signal.coin} ${signal.dominantSide} 신규 트리거 — ${signal.totalTraders}명 (S:${signal.sTierCount})`,
+          priority: trigger.score >= 85 ? 1 : 2,
+          triggerScore: trigger.score,
+        });
+        continue;
+      }
     }
 
     if (!prev) continue;
 
-    // ── S-tier surge: 2+ more S-tier traders ──
+    // ── stier_surge: S-tier +2 AND direction unchanged ──
     const sTierDelta = signal.sTierCount - prev.sTierCount;
     if (
       sTierDelta >= 2 &&
-      isMeaningfulAlertSignal(signal, "stier_surge") &&
+      signal.dominantSide === prev.dominantSide &&
       !isOnCooldown(signal.coin, "stier_surge", cooldowns, now)
     ) {
       events.push({
         type: "stier_surge",
         signal,
-        detail: `S-tier +${sTierDelta}명 진입 (${prev.sTierCount}→${signal.sTierCount})`,
+        detail: `S-tier +${sTierDelta}명 유입 (${prev.sTierCount}→${signal.sTierCount})`,
         priority: 1,
+        triggerScore: trigger.score,
       });
       continue;
     }
 
-    // ── Strength upgrade: weak→moderate, moderate→strong ──
+    // ── strength_upgrade: moderate → strong only (weak→moderate intentionally silent) ──
     if (
-      STRENGTH_RANK[signal.strength] > STRENGTH_RANK[prev.strength] &&
-      isMeaningfulAlertSignal(signal, "strength_upgrade") &&
+      prev.strength === "moderate" &&
+      signal.strength === "strong" &&
+      signal.dominantSide === prev.dominantSide &&
       !isOnCooldown(signal.coin, "strength_upgrade", cooldowns, now)
     ) {
       events.push({
         type: "strength_upgrade",
         signal,
-        detail: `시그널 강도 상승 (${prev.strength}→${signal.strength})`,
-        priority: signal.strength === "strong" ? 1 : 2,
+        detail: `시그널 강도 상승 (moderate→strong)`,
+        priority: 1,
+        triggerScore: trigger.score,
       });
       continue;
     }
 
-    // ── Consensus formed: type changed to consensus ──
+    // ── consensus_formed: alignment band → consensus ──
+    const prevBand = prev.scoring?.v2.alignmentBand;
+    const currBand = signal.scoring?.v2.alignmentBand;
     if (
-      signal.type === "consensus" &&
-      prev.type !== "consensus" &&
-      isMeaningfulAlertSignal(signal, "consensus_formed") &&
+      currBand === "consensus" &&
+      prevBand !== "consensus" &&
       !isOnCooldown(signal.coin, "consensus_formed", cooldowns, now)
     ) {
       events.push({
@@ -314,31 +281,36 @@ export function detectEvents(
         signal,
         detail: `컨센서스 형성 — ${signal.totalTraders}명 중 ${Math.max(signal.longTraders, signal.shortTraders)}명 ${signal.dominantSide}`,
         priority: 1,
+        triggerScore: trigger.score,
       });
       continue;
     }
 
-    // ── Side flip: dominant side changed ──
+    // ── side_flip: direction changed AND new direction stable N cycles ──
     if (
       prev.dominantSide !== "SPLIT" &&
       signal.dominantSide !== "SPLIT" &&
       prev.dominantSide !== signal.dominantSide &&
-      isMeaningfulAlertSignal(signal, "side_flip") &&
+      (sideStreaks[signal.coin]?.count ?? 0) >= SIDE_FLIP_REQUIRED_STREAK &&
+      sideStreaks[signal.coin]?.side === signal.dominantSide &&
+      signal.strength === "strong" &&
+      trigger.score >= 80 &&
       !isOnCooldown(signal.coin, "side_flip", cooldowns, now)
     ) {
       events.push({
         type: "side_flip",
         signal,
-        detail: `방향 전환 ${prev.dominantSide}→${signal.dominantSide}`,
+        detail: `방향 전환 확정 ${prev.dominantSide}→${signal.dominantSide} (${sideStreaks[signal.coin]?.count} 사이클 유지)`,
         priority: 2,
+        triggerScore: trigger.score,
       });
     }
   }
 
-  // Sort by priority (1 first), then by total value
+  // Sort: priority first, then trigger score
   events.sort((a, b) => {
     if (a.priority !== b.priority) return a.priority - b.priority;
-    return b.signal.totalValueUsd - a.signal.totalValueUsd;
+    return b.triggerScore - a.triggerScore;
   });
 
   return events;
@@ -354,8 +326,7 @@ export function applyCooldowns(
   for (const event of events) {
     updated[getCooldownKey(event.signal.coin, event.type)] = now;
   }
-  // Prune old entries (>2 hours)
-  const cutoff = now - 2 * 60 * 60 * 1000;
+  const cutoff = now - 3 * 60 * 60 * 1000;
   for (const [key, ts] of Object.entries(updated)) {
     if (ts < cutoff) delete updated[key];
   }

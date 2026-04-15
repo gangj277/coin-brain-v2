@@ -7,9 +7,14 @@ import {
 import type { ServedSignalSnapshot } from "@/lib/pipeline/types";
 import { parseJson } from "@/lib/pipeline/repository-utils";
 import {
-  detectEvents,
   applyCooldowns,
+  detectEvents,
+  ensureDailyBucket,
+  incrementDailyCount,
+  updateSideStreaks,
   type CooldownState,
+  type DailyAlertStats,
+  type SideStreakState,
 } from "@/lib/telegram/detector";
 import { formatAlerts } from "@/lib/telegram/formatter";
 import { sendMessages } from "@/lib/telegram/client";
@@ -33,7 +38,6 @@ export function buildNotifyRouteHandler(deps: NotifyRouteDeps = {}) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Check that Telegram is configured
     if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHANNEL_ID) {
       return Response.json(
         { error: "Telegram not configured" },
@@ -43,47 +47,83 @@ export function buildNotifyRouteHandler(deps: NotifyRouteDeps = {}) {
 
     try {
       const redis = getRedis();
+      const currentTime = now();
 
-      // Load current served snapshot
       const current = await signalSnapshotRepository.loadServed();
       if (!current) {
         return Response.json({ ok: true, skipped: "no_snapshot" });
       }
 
-      // Load previous state and cooldowns
-      const [previousRaw, cooldownsRaw] = await Promise.all([
-        redis.get<string>(KEYS.NOTIFY_LAST_STATE),
-        redis.get<string>(KEYS.NOTIFY_COOLDOWNS),
-      ]);
+      const [previousRaw, cooldownsRaw, sideStreaksRaw, dailyStatsRaw] =
+        await Promise.all([
+          redis.get<string>(KEYS.NOTIFY_LAST_STATE),
+          redis.get<string>(KEYS.NOTIFY_COOLDOWNS),
+          redis.get<string>(KEYS.NOTIFY_SIDE_STREAKS),
+          redis.get<string>(KEYS.NOTIFY_DAILY_STATS),
+        ]);
 
       const previous = parseJson<ServedSignalSnapshot | null>(previousRaw, null);
       const cooldowns = parseJson<CooldownState>(cooldownsRaw, {});
+      const sideStreaks = parseJson<SideStreakState>(sideStreaksRaw, {});
+      const dailyStats = ensureDailyBucket(
+        parseJson<DailyAlertStats | null>(dailyStatsRaw, null),
+        currentTime
+      );
 
-      // Detect events
-      const currentTime = now();
-      const events = detectEvents(current, previous, cooldowns, currentTime);
+      // Update side streaks BEFORE detection (so new streak count is visible)
+      const updatedSideStreaks = updateSideStreaks(
+        sideStreaks,
+        current,
+        currentTime
+      );
 
-      if (events.length === 0) {
+      const events = detectEvents(current, previous, {
+        sideStreaks: updatedSideStreaks,
+        dailyStats,
+        cooldowns,
+        now: currentTime,
+      });
+
+      // Enforce cap while emitting
+      const toSend: typeof events = [];
+      let bucket = dailyStats;
+      for (const event of events) {
+        if (bucket.totalSent >= 5) break;
+        if ((bucket.perCoin[event.signal.coin] ?? 0) >= 2) continue;
+        toSend.push(event);
+        bucket = incrementDailyCount(bucket, event.signal.coin);
+      }
+
+      if (toSend.length === 0) {
+        // Still persist side streak + last state even when nothing sent
+        await Promise.all([
+          redis.set(KEYS.NOTIFY_LAST_STATE, JSON.stringify(current)),
+          redis.set(
+            KEYS.NOTIFY_SIDE_STREAKS,
+            JSON.stringify(updatedSideStreaks)
+          ),
+          redis.set(KEYS.NOTIFY_DAILY_STATS, JSON.stringify(bucket)),
+        ]);
         return Response.json({
           ok: true,
-          events: 0,
+          events: events.length,
+          sent: 0,
           signals: current.signals.length,
+          dailySent: bucket.totalSent,
         });
       }
 
-      // Cap at 5 alerts per cycle to avoid spam
-      const toSend = events.slice(0, 5);
-
-      // Format and send
       const messages = formatAlerts(toSend).map((text) => ({ text }));
       const results = await sendMessages(messages);
       const sent = results.filter((r) => r.ok).length;
 
-      // Update state
       const updatedCooldowns = applyCooldowns(cooldowns, toSend, currentTime);
+
       await Promise.all([
         redis.set(KEYS.NOTIFY_LAST_STATE, JSON.stringify(current)),
         redis.set(KEYS.NOTIFY_COOLDOWNS, JSON.stringify(updatedCooldowns)),
+        redis.set(KEYS.NOTIFY_SIDE_STREAKS, JSON.stringify(updatedSideStreaks)),
+        redis.set(KEYS.NOTIFY_DAILY_STATS, JSON.stringify(bucket)),
       ]);
 
       return Response.json({
@@ -91,6 +131,7 @@ export function buildNotifyRouteHandler(deps: NotifyRouteDeps = {}) {
         events: events.length,
         sent,
         coins: toSend.map((e) => e.signal.coin),
+        dailySent: bucket.totalSent,
       });
     } catch (error) {
       console.error("[Notify]", error);
